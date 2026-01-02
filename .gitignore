@@ -1,43 +1,43 @@
 # =========================
-# Node.js
+# Node / Electron
 # =========================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
 
 # =========================
-# Entornos
+# Build outputs
+# =========================
+dist/
+out/
+build/
+win-unpacked/
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.AppImage
+*.blockmap
+*.nsis.7z
+
+# =========================
+# Electron Builder
+# =========================
+builder-effective-config.yaml
+
+# =========================
+# Runtime folders (creados en ejecución)
+# =========================
+uploads/
+tmp/
+app.log
+
+# =========================
+# Environment variables
 # =========================
 .env
 .env.*
-!.env.example
-
-# =========================
-# Build / Dist
-# =========================
-dist/
-build/
-out/
-
-# =========================
-# Logs
-# =========================
-logs/
-*.log
-
-# =========================
-# Cache
-# =========================
-.cache/
-.tmp/
-.temp/
-
-# =========================
-# Coverage
-# =========================
-coverage/
 
 # =========================
 # OS
@@ -49,7 +49,6 @@ Thumbs.db
 # IDEs / Editors
 # =========================
 .vscode/
-!.vscode/extensions.json
 .idea/
 *.suo
 *.ntvs*
@@ -57,13 +56,14 @@ Thumbs.db
 *.sln
 
 # =========================
-# Runtime
+# Logs
 # =========================
-*.pid
-*.seed
-*.pid.lock
+logs/
+*.log
 
 # =========================
-# Optional npm cache
+# Cache
 # =========================
-.npm
+.cache/
+.temp/
+.tmp/

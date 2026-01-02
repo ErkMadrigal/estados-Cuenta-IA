@@ -1,39 +1,46 @@
-// server.js (versión robusta para PDFs escaneados/foto BBVA)
-// ✅ Paso A: Detecta páginas con “tabla de movimientos” (visión barata, miniaturas)
-// ✅ Paso B: Extrae SOLO esas páginas (visión alta, estructurado)
-// ✅ Limpia PNGs temporales SIEMPRE
-// ✅ Fallback automático si no detecta páginas: procesa 1–6
-// ✅ Normaliza números MX/LatAm
-
-import express from "express";
-import multer from "multer";
-import fs from "fs";
-import path from "path";
-import dotenv from "dotenv";
-import * as pdfParseMod from "pdf-parse";
-import { fromPath as pdf2picFromPath } from "pdf2pic";
+// server.cjs ✅ Express backend (para Electron) + rutas seguras + startServer()
+const express = require("express");
+const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
+const dotenv = require("dotenv");
+const pdfParse = require("pdf-parse");
+const { fromPath: pdf2picFromPath } = require("pdf2pic");
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-if (!process.env.OPENAI_API_KEY) {
-  console.warn("⚠️ Falta OPENAI_API_KEY en tu .env");
+// -----------------------------
+// Paths seguros (Electron + pkg)
+// -----------------------------
+const IS_PKG = typeof process.pkg !== "undefined";
+// Nota: En Electron, process.execPath apunta a electron.exe, pero sirve para ubicar un base dir.
+const BASE_DIR = IS_PKG ? path.dirname(process.execPath) : __dirname;
+
+// Carpetas runtime
+const UPLOAD_DIR = path.join(BASE_DIR, "uploads");
+const TMP_DIR = path.join(BASE_DIR, "tmp");
+
+// Front incluido
+const PUBLIC_DIR = path.join(__dirname, "public");
+
+// Crear folders si no existen
+for (const dir of [UPLOAD_DIR, TMP_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 // -----------------------------
-// Directories
+// Middleware
 // -----------------------------
-const UPLOAD_DIR = path.resolve("uploads");
-const TMP_DIR = path.resolve("tmp");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
-if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
-
 app.use(express.json({ limit: "10mb" }));
-app.use(express.static("public"));
+app.use(express.static(PUBLIC_DIR));
 
-// CORS por si luego separas front/back
+app.get("/", (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+});
+
+// CORS simple (si un día separas)
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -47,26 +54,14 @@ app.use((req, res, next) => {
 // -----------------------------
 const upload = multer({
   dest: UPLOAD_DIR,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+  limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ok =
       file.mimetype === "application/pdf" ||
-      file.originalname?.toLowerCase().endsWith(".pdf");
+      String(file.originalname || "").toLowerCase().endsWith(".pdf");
     cb(ok ? null : new Error("Solo se permite PDF"), ok);
   },
 });
-
-// -----------------------------
-// pdf-parse resolver
-// -----------------------------
-function getPdfParseFn(mod) {
-  if (typeof mod === "function") return mod;
-  if (mod && typeof mod.default === "function") return mod.default;
-  const fn = mod && Object.values(mod).find((v) => typeof v === "function");
-  if (fn) return fn;
-  throw new Error("No se encontró función de pdf-parse.");
-}
-const pdfParse = getPdfParseFn(pdfParseMod);
 
 // -----------------------------
 // Helpers
@@ -83,11 +78,11 @@ function safeNumber(x) {
 
   let s = String(x).replace(/\$/g, "").replace(/\s/g, "").trim();
 
-  // "1.234,56" (latam) => miles "." decimal ","
+  // "1.234,56" => 1234.56
   if (s.includes(",") && s.includes(".")) {
     s = s.replace(/\./g, "").replace(",", ".");
   } else {
-    // "1,234.56" => miles ","
+    // "1,234.56" => 1234.56
     s = s.replace(/,/g, "");
   }
 
@@ -124,7 +119,6 @@ function dedupeMovimientos(rows) {
   return out;
 }
 
-// Detecta PDF escaneado/foto
 function isScannedLike(text, fileSizeBytes) {
   const t = (text || "").trim();
   if (!t) return true;
@@ -143,7 +137,7 @@ function isScannedLike(text, fileSizeBytes) {
 }
 
 // -----------------------------
-// OpenAI Responses API (JSON schema strict)
+// OpenAI Responses API (strict JSON schema)
 // -----------------------------
 function extractOutputText(data) {
   if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
@@ -171,6 +165,10 @@ function tryParseJsonLoose(outText) {
 }
 
 async function openaiStructured({ content, schema, model = "gpt-5-mini" }) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("Falta OPENAI_API_KEY en .env");
+  }
+
   const payload = {
     model,
     input: [{ role: "user", content }],
@@ -243,10 +241,7 @@ function schemaPages() {
       type: "object",
       additionalProperties: false,
       properties: {
-        pages: {
-          type: "array",
-          items: { type: "integer" },
-        },
+        pages: { type: "array", items: { type: "integer" } },
       },
       required: ["pages"],
     },
@@ -266,7 +261,6 @@ async function renderPagesToImages(pdfPath, pages, opts) {
       if (res?.path) imagePaths.push(res.path);
     } catch {}
   }
-
   return imagePaths;
 }
 
@@ -280,11 +274,7 @@ function buildVisionImagesContent(imagePaths, extraText) {
   ];
 }
 
-// -----------------------------
-// Paso A: detectar páginas con tabla de movimientos (visión barata)
-// -----------------------------
 async function detectTransactionPages(pdfPath, pageCount) {
-  // miniaturas baratas: suficiente para ver si hay tabla
   const lowOpts = {
     density: 90,
     saveFilename: "thumb",
@@ -295,12 +285,11 @@ async function detectTransactionPages(pdfPath, pageCount) {
   };
 
   const pages = Array.from({ length: pageCount }, (_, i) => i + 1);
-  const batchSize = 6; // para no mandar demasiadas imágenes por request
-
+  const batchSize = 6;
   const found = new Set();
+
   for (let i = 0; i < pages.length; i += batchSize) {
     const chunk = pages.slice(i, i + batchSize);
-
     const imgs = await renderPagesToImages(pdfPath, chunk, lowOpts);
     if (!imgs.length) continue;
 
@@ -308,11 +297,9 @@ async function detectTransactionPages(pdfPath, pageCount) {
       const schema = schemaPages();
       const content = buildVisionImagesContent(
         imgs,
-        `De estas páginas de un estado de cuenta, identifica cuáles contienen una TABLA de movimientos
-(con columnas tipo FECHA, DESCRIPCIÓN/CONCEPTO, CARGOS/ABONOS o RETIROS/DEPÓSITOS y SALDO).
-Ignora portada, avisos, glosarios, publicidad.
-Ignora anotaciones a mano.
-Devuelve SOLO JSON con "pages": [números de página] usando los números REALES de estas páginas:
+        `Identifica cuáles páginas contienen una TABLA de movimientos bancarios
+(con columnas tipo FECHA, CONCEPTO/DESCRIPCIÓN, RETIROS/CARGOS, DEPÓSITOS/ABONOS, SALDO).
+Devuelve SOLO JSON con "pages": [números de página] usando los números REALES:
 ${chunk.join(", ")}`
       );
 
@@ -321,18 +308,13 @@ ${chunk.join(", ")}`
         if (Number.isInteger(p) && p >= 1 && p <= pageCount) found.add(p);
       }
     } finally {
-      // limpia miniaturas
       for (const p of imgs) cleanupFile(p);
     }
   }
 
-  // ordenadas
   return Array.from(found).sort((a, b) => a - b);
 }
 
-// -----------------------------
-// Paso B: extraer movimientos SOLO de páginas detectadas (visión alta)
-// -----------------------------
 async function extractMovimientosFromPages(pdfPath, pages) {
   const highOpts = {
     density: 280,
@@ -344,8 +326,6 @@ async function extractMovimientosFromPages(pdfPath, pages) {
   };
 
   const schema = schemaMovimientos();
-
-  // Procesa en grupos pequeños para precisión (2 páginas por request)
   const groupSize = 2;
   let all = [];
 
@@ -357,15 +337,14 @@ async function extractMovimientosFromPages(pdfPath, pages) {
     try {
       const content = buildVisionImagesContent(
         imgs,
-        `Extrae la tabla de movimientos bancarios de estas páginas.
+        `Extrae la tabla de MOVIMIENTOS.
 Reglas:
-- Devuelve SOLO JSON según el schema.
+- Devuelve SOLO JSON del schema.
 - Ignora anotaciones manuscritas.
-- Si falta un valor, usa 0.
-- Normaliza fechas a YYYY-MM-DD si puedes.
-- "retiros" y "depositos" deben ser números.
-- Si hay Cargo/Abono: Cargo=retiros, Abono=depositos.
-- NO inventes filas.`);
+- Si falta un valor: 0.
+- Cargo=retiros, Abono=depositos.
+- NO inventes filas.`
+      );
 
       const result = await openaiStructured({ content, schema });
       all = all.concat(normalizeMovimientos(result));
@@ -378,7 +357,7 @@ Reglas:
 }
 
 // -----------------------------
-// Endpoint
+// Endpoints
 // -----------------------------
 app.post("/api/upload", upload.single("pdf"), async (req, res) => {
   const uploadedPath = req.file?.path;
@@ -388,58 +367,53 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
 
     const fileSize = req.file.size || 0;
 
-    // 1) Intento texto
     const buffer = fs.readFileSync(uploadedPath);
     const parsed = await pdfParse(buffer);
     const text = (parsed?.text || "").trim();
     const scanned = isScannedLike(text, fileSize);
 
-    // Para PDFs como el tuyo (foto) -> scanned = true, y esto se va a visión
-    // 2) Si es escaneado: detecta páginas con movimientos y extrae solo esas
-    if (scanned) {
-      const pageCount = Number(parsed?.numpages || 0) || 0;
-
-      // Paso A: detectar páginas
-      let pages = [];
-      if (pageCount > 0) {
-        pages = await detectTransactionPages(uploadedPath, pageCount);
-      }
-
-      // fallback si no detecta: intenta 1–6
-      if (!pages.length) pages = [1, 2, 3, 4, 5, 6];
-
-      // Paso B: extraer
-      const movimientos = await extractMovimientosFromPages(uploadedPath, pages);
-
-      return res.json({
-        ok: true,
-        modo: "vision_scanned",
-        pages_detected: pages,
-        movimientos,
-      });
-    }
-
-    // 3) Si NO es escaneado (texto real): aquí podrías meter tu extractor por texto.
-    // Para mantenerlo simple (y robusto): si no es escaneado, igual usamos visión optimizada,
-    // pero puedes reemplazar por tu extractor de texto si quieres.
     const pageCount = Number(parsed?.numpages || 0) || 0;
-    let pages = pageCount ? await detectTransactionPages(uploadedPath, pageCount) : [];
+
+    let pages = [];
+    if (pageCount > 0) pages = await detectTransactionPages(uploadedPath, pageCount);
     if (!pages.length) pages = [1, 2, 3, 4, 5, 6];
 
     const movimientos = await extractMovimientosFromPages(uploadedPath, pages);
 
     return res.json({
       ok: true,
-      modo: "vision",
+      modo: scanned ? "vision_scanned" : "vision",
       pages_detected: pages,
       movimientos,
     });
   } catch (err) {
-    console.error("❌ /api/upload error:", err);
     return res.status(500).json({ ok: false, error: err.message || "Error procesando PDF" });
   } finally {
     cleanupFile(uploadedPath);
   }
 });
 
-app.listen(PORT, () => console.log(`✅ http://localhost:${PORT}`));
+// Para cerrar server desde Electron
+let serverInstance = null;
+
+function startServer(port = process.env.PORT || 3000) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (serverInstance) return resolve(port);
+
+      serverInstance = app.listen(port, () => resolve(port));
+      serverInstance.on("error", reject);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function stopServer() {
+  return new Promise((resolve) => {
+    if (!serverInstance) return resolve();
+    serverInstance.close(() => resolve());
+  });
+}
+
+module.exports = { startServer, stopServer };
