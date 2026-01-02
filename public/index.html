@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <title>PDF → Tabla (IA)</title>
+</head>
+
+<body class="bg-slate-950 text-slate-100">
+  <!-- OVERLAY LOADING -->
+  <div id="loadingOverlay" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+
+    <div class="relative h-full w-full flex items-center justify-center p-6">
+      <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl">
+        <div class="flex items-center gap-4">
+          <div class="h-12 w-12 rounded-full border-4 border-slate-700 border-t-emerald-400 animate-spin"></div>
+          <div>
+            <div class="text-lg font-semibold">Procesando tu PDF…</div>
+            <div class="text-slate-300 text-sm mt-1">
+              No cierres esta página ni el navegador mientras termina.
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-xs text-slate-400">
+          Si tu PDF es escaneado (foto) puede tardar un poco más.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OFFLINE BANNER -->
+  <div id="offlineBanner" class="hidden fixed top-4 left-1/2 -translate-x-1/2 z-50">
+    <div class="rounded-xl border border-rose-500/40 bg-rose-950/60 px-4 py-2 text-sm text-rose-200 shadow-lg">
+      ⚠️ Sin internet. Revisa tu conexión para continuar.
+    </div>
+  </div>
+
+  <div class="max-w-5xl mx-auto p-6">
+    <div class="flex items-center justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-semibold">Estado de cuenta → Tabla</h1>
+        <p class="text-slate-300 text-sm">Sube un PDF y conviértelo a tabla.</p>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <button id="exportBtn" class="hidden px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-medium">
+          Exportar CSV
+        </button>
+      </div>
+    </div>
+
+    <div id="dropzone"
+      class="mt-6 border border-slate-800 rounded-2xl p-8 bg-slate-900/40 hover:bg-slate-900/60 transition
+             flex flex-col items-center justify-center text-center cursor-pointer">
+      <div class="text-lg font-medium">Arrastra tu PDF aquí</div>
+      <div class="text-slate-400 text-sm mt-1">o da click para elegir archivo</div>
+      <input id="fileInput" type="file" accept="application/pdf" class="hidden" />
+      <div id="status" class="mt-4 text-sm text-slate-300"></div>
+    </div>
+
+    <div class="mt-6 bg-slate-900/40 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="p-4 border-b border-slate-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex items-center gap-3">
+          <div class="text-sm text-slate-300">Movimientos</div>
+          <div id="modeBadge" class="text-xs px-2 py-1 rounded-full bg-slate-800 text-slate-200 hidden"></div>
+        </div>
+
+        <!-- BUSCADOR -->
+        <div class="w-full sm:w-80">
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Buscar en la tabla…"
+            class="w-full rounded-xl bg-slate-950/60 border border-slate-800 px-4 py-2 text-sm
+                   outline-none focus:ring-2 focus:ring-emerald-500/40"
+          />
+        </div>
+      </div>
+
+      <div class="overflow-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-900 sticky top-0">
+            <tr class="text-left text-slate-300">
+              <th class="p-3">Fecha</th>
+              <th class="p-3">Concepto</th>
+              <th class="p-3">Retiros</th>
+              <th class="p-3">Depósitos</th>
+              <th class="p-3">Saldo</th>
+            </tr>
+          </thead>
+          <tbody id="tbody" class="divide-y divide-slate-800"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
