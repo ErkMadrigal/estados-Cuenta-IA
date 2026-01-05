@@ -4,98 +4,142 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <script src="https://cdn.tailwindcss.com"></script>
-  <title>PDF → Tabla (IA)</title>
+  <title>EstadosCuentaAI</title>
 </head>
 
-<body class="bg-slate-950 text-slate-100">
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+
+  <!-- OFFLINE BANNER -->
+  <div id="offlineBanner" class="hidden sticky top-0 z-50">
+    <div class="bg-red-600 text-white px-4 py-2 text-sm text-center">
+      ⚠️ Sin internet. Revisa tu conexión.
+    </div>
+  </div>
+
   <!-- OVERLAY LOADING -->
   <div id="loadingOverlay" class="fixed inset-0 z-50 hidden">
     <div class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
 
     <div class="relative h-full w-full flex items-center justify-center p-6">
-      <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950/80 p-6 shadow-xl">
-        <div class="flex items-center gap-4">
-          <div class="h-12 w-12 rounded-full border-4 border-slate-700 border-t-emerald-400 animate-spin"></div>
+      <div class="w-full max-w-md rounded-2xl bg-slate-900/80 border border-slate-700 shadow-xl p-6">
+        <div class="flex items-center gap-3">
+          <div class="h-10 w-10 rounded-full border-4 border-slate-300 border-t-transparent animate-spin"></div>
           <div>
-            <div class="text-lg font-semibold">Procesando tu PDF…</div>
-            <div class="text-slate-300 text-sm mt-1">
-              No cierres esta página ni el navegador mientras termina.
-            </div>
+            <div class="font-semibold text-lg">Procesando estado de cuenta…</div>
+            <div class="text-slate-300 text-sm" id="loadingText">No cierres la app ni el navegador.</div>
           </div>
         </div>
         <div class="mt-4 text-xs text-slate-400">
-          Si tu PDF es escaneado (foto) puede tardar un poco más.
+          Esto puede tardar dependiendo del PDF.
         </div>
       </div>
     </div>
   </div>
 
-  <!-- OFFLINE BANNER -->
-  <div id="offlineBanner" class="hidden fixed top-4 left-1/2 -translate-x-1/2 z-50">
-    <div class="rounded-xl border border-rose-500/40 bg-rose-950/60 px-4 py-2 text-sm text-rose-200 shadow-lg">
-      ⚠️ Sin internet. Revisa tu conexión para continuar.
-    </div>
-  </div>
-
-  <div class="max-w-5xl mx-auto p-6">
-    <div class="flex items-center justify-between gap-4">
+  <main class="max-w-6xl mx-auto p-6">
+    <header class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-semibold">Estado de cuenta → Tabla</h1>
-        <p class="text-slate-300 text-sm">Sube un PDF y conviértelo a tabla.</p>
+        <h1 class="text-2xl font-bold">EstadosCuentaAI</h1>
+        <p class="text-slate-300 text-sm">
+          Sube un estado de cuenta (incluso escaneado). Si está protegido, escribe el password.
+        </p>
       </div>
 
-      <div class="flex items-center gap-3">
-        <button id="exportBtn" class="hidden px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-medium">
-          Exportar CSV
+      <div class="flex gap-2">
+        <button id="btnPick"
+          class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 transition font-medium">
+          Elegir PDF
+        </button>
+
+        <button id="btnUpload"
+          class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled>
+          Procesar
         </button>
       </div>
-    </div>
+    </header>
 
-    <div id="dropzone"
-      class="mt-6 border border-slate-800 rounded-2xl p-8 bg-slate-900/40 hover:bg-slate-900/60 transition
-             flex flex-col items-center justify-center text-center cursor-pointer">
-      <div class="text-lg font-medium">Arrastra tu PDF aquí</div>
-      <div class="text-slate-400 text-sm mt-1">o da click para elegir archivo</div>
-      <input id="fileInput" type="file" accept="application/pdf" class="hidden" />
-      <div id="status" class="mt-4 text-sm text-slate-300"></div>
-    </div>
-
-    <div class="mt-6 bg-slate-900/40 border border-slate-800 rounded-2xl overflow-hidden">
-      <div class="p-4 border-b border-slate-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div class="flex items-center gap-3">
-          <div class="text-sm text-slate-300">Movimientos</div>
-          <div id="modeBadge" class="text-xs px-2 py-1 rounded-full bg-slate-800 text-slate-200 hidden"></div>
-        </div>
-
-        <!-- BUSCADOR -->
-        <div class="w-full sm:w-80">
-          <input
-            id="searchInput"
-            type="text"
-            placeholder="Buscar en la tabla…"
-            class="w-full rounded-xl bg-slate-950/60 border border-slate-800 px-4 py-2 text-sm
-                   outline-none focus:ring-2 focus:ring-emerald-500/40"
-          />
+    <!-- Controls -->
+    <section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4">
+        <div class="text-sm text-slate-300 mb-2">Archivo</div>
+        <div id="fileName" class="text-slate-100 font-medium break-words">No has seleccionado nada</div>
+        <input id="fileInput" type="file" accept="application/pdf" class="hidden" />
+        <div class="text-xs text-slate-400 mt-2">
+          Tip: si sale “PDF protegido”, escribe el password y reintenta.
         </div>
       </div>
 
+      <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4">
+        <div class="text-sm text-slate-300 mb-2">Password (solo si está protegido)</div>
+
+        <div id="passwordWrap" class="space-y-2">
+          <input id="pdfPassword"
+            type="password"
+            placeholder="Escribe la contraseña…"
+            class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-indigo-500"/>
+
+          <div class="text-xs text-slate-400">
+            La contraseña solo se usa para desencriptar y procesar.
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4">
+        <div class="text-sm text-slate-300 mb-2">Estado</div>
+        <div id="status"
+          class="text-sm rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-200">
+          Listo.
+        </div>
+        <div class="mt-3 flex gap-2">
+          <button id="btnExport"
+            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled>
+            Exportar CSV
+          </button>
+          <button id="btnClear"
+            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition text-sm">
+            Limpiar
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Search -->
+    <section class="mt-6 flex flex-col md:flex-row md:items-center gap-3">
+      <input id="searchInput" type="text" placeholder="Buscar en la tabla (fecha, concepto, montos)…"
+        class="w-full md:flex-1 px-4 py-2 rounded-xl bg-slate-900/60 border border-slate-800 outline-none focus:border-indigo-500"/>
+
+      <div class="text-sm text-slate-300">
+        Filas: <span id="rowCount" class="font-semibold text-slate-100">0</span>
+      </div>
+    </section>
+
+    <!-- Table -->
+    <section class="mt-4 rounded-2xl border border-slate-800 overflow-hidden">
       <div class="overflow-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-900 sticky top-0">
-            <tr class="text-left text-slate-300">
-              <th class="p-3">Fecha</th>
-              <th class="p-3">Concepto</th>
-              <th class="p-3">Retiros</th>
-              <th class="p-3">Depósitos</th>
-              <th class="p-3">Saldo</th>
+        <table class="min-w-full text-sm">
+          <thead class="bg-slate-900">
+            <tr class="text-left text-slate-200">
+              <th class="px-4 py-3 whitespace-nowrap">Fecha</th>
+              <th class="px-4 py-3 min-w-[360px]">Concepto</th>
+              <th class="px-4 py-3 whitespace-nowrap">Retiros</th>
+              <th class="px-4 py-3 whitespace-nowrap">Depósitos</th>
+              <th class="px-4 py-3 whitespace-nowrap">Saldo</th>
             </tr>
           </thead>
-          <tbody id="tbody" class="divide-y divide-slate-800"></tbody>
+          <tbody id="tableBody" class="divide-y divide-slate-800 bg-slate-950">
+            <!-- rows -->
+          </tbody>
         </table>
       </div>
-    </div>
-  </div>
+    </section>
 
-  <script src="app.js"></script>
+    <footer class="mt-6 text-xs text-slate-500">
+      Si un PDF está protegido, escribe el password y vuelve a procesar.
+    </footer>
+  </main>
+
+  <script src="./app.js"></script>
 </body>
 </html>

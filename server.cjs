@@ -1,38 +1,33 @@
-// server.cjs ✅ Express backend (para Electron) + rutas seguras + startServer()
+// server.cjs ✅ Express + RUNTIME_DIR + mutool (portable) + qpdf (decrypt) + IA
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const dotenv = require("dotenv");
 const pdfParse = require("pdf-parse");
-const { fromPath: pdf2picFromPath } = require("pdf2pic");
+const { spawn } = require("child_process");
+const os = require("os");
 
 dotenv.config();
 
 const app = express();
 
-// -----------------------------
-// Paths seguros (Electron + pkg)
-// -----------------------------
-const IS_PKG = typeof process.pkg !== "undefined";
-// Nota: En Electron, process.execPath apunta a electron.exe, pero sirve para ubicar un base dir.
-const BASE_DIR = IS_PKG ? path.dirname(process.execPath) : __dirname;
+// =====================================================
+// Paths seguros (Electron)
+// =====================================================
+const BASE_DIR = process.env.RUNTIME_DIR || __dirname;
 
-// Carpetas runtime
 const UPLOAD_DIR = path.join(BASE_DIR, "uploads");
 const TMP_DIR = path.join(BASE_DIR, "tmp");
-
-// Front incluido
 const PUBLIC_DIR = path.join(__dirname, "public");
 
-// Crear folders si no existen
 for (const dir of [UPLOAD_DIR, TMP_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// -----------------------------
+// =====================================================
 // Middleware
-// -----------------------------
+// =====================================================
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(PUBLIC_DIR));
 
@@ -40,7 +35,6 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
-// CORS simple (si un día separas)
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -49,9 +43,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// -----------------------------
+// =====================================================
 // Multer
-// -----------------------------
+// =====================================================
 const upload = multer({
   dest: UPLOAD_DIR,
   limits: { fileSize: 25 * 1024 * 1024 },
@@ -63,9 +57,9 @@ const upload = multer({
   },
 });
 
-// -----------------------------
+// =====================================================
 // Helpers
-// -----------------------------
+// =====================================================
 function cleanupFile(filePath) {
   try {
     if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -77,15 +71,11 @@ function safeNumber(x) {
   if (typeof x === "number") return Number.isFinite(x) ? x : 0;
 
   let s = String(x).replace(/\$/g, "").replace(/\s/g, "").trim();
-
-  // "1.234,56" => 1234.56
   if (s.includes(",") && s.includes(".")) {
     s = s.replace(/\./g, "").replace(",", ".");
   } else {
-    // "1,234.56" => 1234.56
     s = s.replace(/,/g, "");
   }
-
   s = s.replace(/[^\d.-]/g, "");
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
@@ -119,26 +109,105 @@ function dedupeMovimientos(rows) {
   return out;
 }
 
-function isScannedLike(text, fileSizeBytes) {
-  const t = (text || "").trim();
-  if (!t) return true;
+// =====================================================
+// BIN paths (dev vs packaged) ✅ FIX REAL
+// =====================================================
+function getBinPath(exeNameWin, exeNameUnix) {
+  const exe = os.platform() === "win32" ? exeNameWin : exeNameUnix;
 
-  const len = t.length;
-  const letters = (t.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) || []).length;
-  const digits = (t.match(/[0-9]/g) || []).length;
-  const printableRatio = (letters + digits) / Math.max(1, len);
-  const bigPdf = fileSizeBytes > 1.5 * 1024 * 1024;
-  const dateCount =
-    (t.match(
-      /\b(20\d{2}[-\/]\d{2}[-\/]\d{2}|\d{2}[-\/]\d{2}[-\/]20\d{2})\b/g
-    ) || []).length;
-
-  return len < 800 || (bigPdf && len < 3000) || printableRatio < 0.25 || dateCount < 3;
+  const isPackaged = process.env.ELECTRON_IS_PACKAGED === "1";
+  if (!isPackaged) {
+    // ✅ DEV: bin dentro del proyecto
+    return path.join(__dirname, "bin", exe);
+  }
+  // ✅ PACKAGED: resources/bin
+  return path.join(process.resourcesPath, "bin", exe);
 }
 
-// -----------------------------
+function getMutoolPath() {
+  return getBinPath("mutool.exe", "mutool");
+}
+function getQpdfPath() {
+  return getBinPath("qpdf.exe", "qpdf");
+}
+
+// =====================================================
+// mutool: PDF -> PNG (portable)
+// =====================================================
+function renderWithMutool(pdfPath, page, outPng, dpi = 220) {
+  return new Promise((resolve, reject) => {
+    const mutool = getMutoolPath();
+    if (!fs.existsSync(mutool)) {
+      return reject(
+        new Error(`No encuentro mutool en: ${mutool}. Ponlo en /bin y agrégalo a extraResources.`)
+      );
+    }
+
+    // mutool draw -o out.png -r 220 -F png in.pdf 1
+    const args = ["draw", "-o", outPng, "-r", String(dpi), "-F", "png", pdfPath, String(page)];
+    const p = spawn(mutool, args, { windowsHide: true });
+
+    let err = "";
+    p.stderr.on("data", (d) => (err += d.toString()));
+
+    p.on("close", (code) => {
+      if (code === 0 && fs.existsSync(outPng)) return resolve(outPng);
+      reject(new Error(`mutool falló (page ${page}). ${err}`.trim()));
+    });
+  });
+}
+
+async function renderPagesToImages(pdfPath, pages, { savePath, saveFilename, density }) {
+  const out = [];
+  for (const p of pages) {
+    const outPng = path.join(savePath, `${saveFilename}-${p}.png`);
+    const ok = await renderWithMutool(pdfPath, p, outPng, density || 220);
+    out.push(ok);
+  }
+  return out;
+}
+
+// =====================================================
+// qpdf decrypt (PDF protegido)
+// =====================================================
+function decryptPdfWithQpdf(inputPath, password, outPath) {
+  return new Promise((resolve, reject) => {
+    const qpdf = getQpdfPath();
+
+    if (!fs.existsSync(qpdf)) {
+      return reject(
+        new Error(`No encuentro qpdf en: ${qpdf}. Ponlo en /bin y agrégalo a extraResources.`)
+      );
+    }
+
+    const args = [`--password=${password}`, "--decrypt", inputPath, outPath];
+    const p = spawn(qpdf, args, { windowsHide: true });
+
+    let err = "";
+    p.stderr.on("data", (d) => (err += d.toString()));
+
+    p.on("close", (code) => {
+      if (code === 0) return resolve(outPath);
+      reject(new Error(`Password incorrecto o no se pudo desencriptar. ${err}`.trim()));
+    });
+  });
+}
+
+// Heurística simple: si pdf-parse truena con password/encrypted => protegido
+async function isPdfEncrypted(filePath) {
+  try {
+    const buf = fs.readFileSync(filePath);
+    await pdfParse(buf);
+    return false;
+  } catch (e) {
+    const msg = String(e?.message || "").toLowerCase();
+    return msg.includes("password") || msg.includes("encrypted") || msg.includes("security");
+  }
+}
+
+// =====================================================
 // OpenAI Responses API (strict JSON schema)
-// -----------------------------
+// =====================================================
 function extractOutputText(data) {
   if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
   const chunks = [];
@@ -165,9 +234,7 @@ function tryParseJsonLoose(outText) {
 }
 
 async function openaiStructured({ content, schema, model = "gpt-5-mini" }) {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("Falta OPENAI_API_KEY en .env");
-  }
+  if (!process.env.OPENAI_API_KEY) throw new Error("Falta OPENAI_API_KEY en .env");
 
   const payload = {
     model,
@@ -203,9 +270,9 @@ async function openaiStructured({ content, schema, model = "gpt-5-mini" }) {
   return tryParseJsonLoose(outText);
 }
 
-// -----------------------------
+// =====================================================
 // Schemas
-// -----------------------------
+// =====================================================
 function schemaMovimientos() {
   return {
     name: "estado_cuenta",
@@ -248,22 +315,6 @@ function schemaPages() {
   };
 }
 
-// -----------------------------
-// PDF -> Images helpers
-// -----------------------------
-async function renderPagesToImages(pdfPath, pages, opts) {
-  const converter = pdf2picFromPath(pdfPath, opts);
-  const imagePaths = [];
-
-  for (const p of pages) {
-    try {
-      const res = await converter(p);
-      if (res?.path) imagePaths.push(res.path);
-    } catch {}
-  }
-  return imagePaths;
-}
-
 function buildVisionImagesContent(imagePaths, extraText) {
   return [
     { type: "input_text", text: extraText },
@@ -274,24 +325,22 @@ function buildVisionImagesContent(imagePaths, extraText) {
   ];
 }
 
+// =====================================================
+// Detect pages + extract
+// =====================================================
 async function detectTransactionPages(pdfPath, pageCount) {
-  const lowOpts = {
-    density: 90,
-    saveFilename: "thumb",
-    savePath: TMP_DIR,
-    format: "png",
-    width: 800,
-    height: 1100,
-  };
-
   const pages = Array.from({ length: pageCount }, (_, i) => i + 1);
   const batchSize = 6;
   const found = new Set();
 
   for (let i = 0; i < pages.length; i += batchSize) {
     const chunk = pages.slice(i, i + batchSize);
-    const imgs = await renderPagesToImages(pdfPath, chunk, lowOpts);
-    if (!imgs.length) continue;
+
+    const imgs = await renderPagesToImages(pdfPath, chunk, {
+      savePath: TMP_DIR,
+      saveFilename: "thumb",
+      density: 140,
+    });
 
     try {
       const schema = schemaPages();
@@ -316,23 +365,18 @@ ${chunk.join(", ")}`
 }
 
 async function extractMovimientosFromPages(pdfPath, pages) {
-  const highOpts = {
-    density: 280,
-    saveFilename: "page",
-    savePath: TMP_DIR,
-    format: "png",
-    width: 1700,
-    height: 2200,
-  };
-
   const schema = schemaMovimientos();
   const groupSize = 2;
   let all = [];
 
   for (let i = 0; i < pages.length; i += groupSize) {
     const chunk = pages.slice(i, i + groupSize);
-    const imgs = await renderPagesToImages(pdfPath, chunk, highOpts);
-    if (!imgs.length) continue;
+
+    const imgs = await renderPagesToImages(pdfPath, chunk, {
+      savePath: TMP_DIR,
+      saveFilename: "page",
+      density: 260,
+    });
 
     try {
       const content = buildVisionImagesContent(
@@ -340,7 +384,6 @@ async function extractMovimientosFromPages(pdfPath, pages) {
         `Extrae la tabla de MOVIMIENTOS.
 Reglas:
 - Devuelve SOLO JSON del schema.
-- Ignora anotaciones manuscritas.
 - Si falta un valor: 0.
 - Cargo=retiros, Abono=depositos.
 - NO inventes filas.`
@@ -356,51 +399,72 @@ Reglas:
   return dedupeMovimientos(all);
 }
 
-// -----------------------------
-// Endpoints
-// -----------------------------
+// =====================================================
+// Endpoint principal
+// =====================================================
 app.post("/api/upload", upload.single("pdf"), async (req, res) => {
   const uploadedPath = req.file?.path;
+  let workingPdfPath = uploadedPath;
 
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: "No llegó archivo PDF." });
 
-    const fileSize = req.file.size || 0;
+    const password = String(req.body?.password || "").trim();
 
-    const buffer = fs.readFileSync(uploadedPath);
-    const parsed = await pdfParse(buffer);
-    const text = (parsed?.text || "").trim();
-    const scanned = isScannedLike(text, fileSize);
+    // logs útiles para debug
+    console.log("mutoolPath =", getMutoolPath());
+    console.log("qpdfPath =", getQpdfPath());
+    console.log("TMP_DIR =", TMP_DIR);
 
+    const encrypted = await isPdfEncrypted(uploadedPath);
+
+    if (encrypted) {
+      if (!password) {
+        return res.status(401).json({
+          ok: false,
+          error: "Este PDF está protegido. Escribe el password para procesarlo.",
+        });
+      }
+      const decryptedPath = path.join(TMP_DIR, `decrypted-${Date.now()}.pdf`);
+      workingPdfPath = await decryptPdfWithQpdf(uploadedPath, password, decryptedPath);
+    }
+
+    const buf = fs.readFileSync(workingPdfPath);
+    const parsed = await pdfParse(buf);
     const pageCount = Number(parsed?.numpages || 0) || 0;
+    if (!pageCount) throw new Error("No pude leer el número de páginas del PDF.");
 
-    let pages = [];
-    if (pageCount > 0) pages = await detectTransactionPages(uploadedPath, pageCount);
-    if (!pages.length) pages = [1, 2, 3, 4, 5, 6];
+    let pages = await detectTransactionPages(workingPdfPath, pageCount);
+    if (!pages.length) pages = Array.from({ length: Math.min(6, pageCount) }, (_, i) => i + 1);
 
-    const movimientos = await extractMovimientosFromPages(uploadedPath, pages);
+    const movimientos = await extractMovimientosFromPages(workingPdfPath, pages);
 
     return res.json({
       ok: true,
-      modo: scanned ? "vision_scanned" : "vision",
+      encrypted,
       pages_detected: pages,
       movimientos,
     });
   } catch (err) {
-    return res.status(500).json({ ok: false, error: err.message || "Error procesando PDF" });
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "No se pudo procesar el PDF",
+    });
   } finally {
     cleanupFile(uploadedPath);
+    if (workingPdfPath && workingPdfPath !== uploadedPath) cleanupFile(workingPdfPath);
   }
 });
 
-// Para cerrar server desde Electron
+// =====================================================
+// start/stop (Electron)
+// =====================================================
 let serverInstance = null;
 
 function startServer(port = process.env.PORT || 3000) {
   return new Promise((resolve, reject) => {
     try {
       if (serverInstance) return resolve(port);
-
       serverInstance = app.listen(port, () => resolve(port));
       serverInstance.on("error", reject);
     } catch (e) {

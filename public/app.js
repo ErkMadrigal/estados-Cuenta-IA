@@ -1,25 +1,57 @@
-const dropzone = document.getElementById("dropzone");
-const fileInput = document.getElementById("fileInput");
-const statusEl = document.getElementById("status");
-const tbody = document.getElementById("tbody");
-const exportBtn = document.getElementById("exportBtn");
-const modeBadge = document.getElementById("modeBadge");
-const searchInput = document.getElementById("searchInput");
+// public/app.js
+let selectedFile = null;
+let movimientos = [];
+let filtered = [];
 
+// DOM
+const fileInput = document.getElementById("fileInput");
+const btnPick = document.getElementById("btnPick");
+const btnUpload = document.getElementById("btnUpload");
+const btnExport = document.getElementById("btnExport");
+const btnClear = document.getElementById("btnClear");
+
+const fileName = document.getElementById("fileName");
+const statusEl = document.getElementById("status");
 const loadingOverlay = document.getElementById("loadingOverlay");
+const loadingText = document.getElementById("loadingText");
+
+const pdfPassword = document.getElementById("pdfPassword");
+const searchInput = document.getElementById("searchInput");
+const tableBody = document.getElementById("tableBody");
+const rowCount = document.getElementById("rowCount");
+
 const offlineBanner = document.getElementById("offlineBanner");
 
-let lastRows = [];
-let filteredRows = [];
-let isProcessing = false;
+// -------------------------
+// UI helpers
+// -------------------------
+function setStatus(msg, type = "info") {
+  statusEl.textContent = msg;
 
-function money(n) {
-  const num = Number(n || 0);
-  return num.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  statusEl.classList.remove(
+    "border-slate-800",
+    "border-emerald-600",
+    "border-red-600",
+    "border-amber-500"
+  );
+
+  if (type === "ok") statusEl.classList.add("border-emerald-600");
+  else if (type === "error") statusEl.classList.add("border-red-600");
+  else if (type === "warn") statusEl.classList.add("border-amber-500");
+  else statusEl.classList.add("border-slate-800");
 }
 
-function escapeHTML(str) {
-  return String(str ?? "")
+function setLoading(isLoading, text = "No cierres la app ni el navegador.") {
+  loadingText.textContent = text;
+  loadingOverlay.classList.toggle("hidden", !isLoading);
+
+  // bloquear interacción
+  document.body.style.pointerEvents = isLoading ? "none" : "auto";
+  loadingOverlay.style.pointerEvents = "auto";
+}
+
+function escapeHtml(str) {
+  return String(str || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -27,175 +59,197 @@ function escapeHTML(str) {
     .replaceAll("'", "&#039;");
 }
 
-function setStatus(msg, kind = "info") {
-  const map = { info: "text-slate-300", ok: "text-emerald-400", err: "text-rose-400" };
-  statusEl.className = `mt-4 text-sm ${map[kind] || map.info}`;
-  statusEl.textContent = msg;
+function fmtMoney(n) {
+  const num = Number(n || 0);
+  if (!Number.isFinite(num)) return "0";
+  return num.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function setProcessing(state) {
-  isProcessing = state;
-  loadingOverlay.classList.toggle("hidden", !state);
+function renderTable(rows) {
+  tableBody.innerHTML = "";
 
-  // Bloquea interacción con dropzone durante procesamiento
-  dropzone.classList.toggle("opacity-60", state);
-  dropzone.classList.toggle("pointer-events-none", state);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-900/40 transition";
 
-  if (state) setStatus("Procesando… no cierres la página ni el navegador.", "info");
-}
-
-// Evitar que cierre si está procesando
-window.addEventListener("beforeunload", (e) => {
-  if (!isProcessing) return;
-  e.preventDefault();
-  e.returnValue = "";
-});
-
-// Offline/online alerts
-function updateOnlineState() {
-  const online = navigator.onLine;
-  offlineBanner.classList.toggle("hidden", online);
-
-  if (!online) {
-    setStatus("⚠️ Sin conexión a internet. Vuelve a conectarte para continuar.", "err");
-  } else {
-    if (!isProcessing && lastRows.length) setStatus("Conectado ✅", "ok");
+    tr.innerHTML = `
+      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${escapeHtml(r.fecha)}</td>
+      <td class="px-4 py-3 text-slate-100">${escapeHtml(r.concepto)}</td>
+      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${fmtMoney(r.retiros)}</td>
+      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${fmtMoney(r.depositos)}</td>
+      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${fmtMoney(r.saldo)}</td>
+    `;
+    tableBody.appendChild(tr);
   }
-}
-window.addEventListener("online", updateOnlineState);
-window.addEventListener("offline", updateOnlineState);
-updateOnlineState();
 
-// Render
-function render(rows) {
-  filteredRows = rows || [];
-
-  tbody.innerHTML = filteredRows.map(r => `
-    <tr class="hover:bg-slate-900/60">
-      <td class="p-3 whitespace-nowrap">${escapeHTML(r.fecha)}</td>
-      <td class="p-3 min-w-[360px]">${escapeHTML(r.concepto)}</td>
-      <td class="p-3 whitespace-nowrap">${money(r.retiros)}</td>
-      <td class="p-3 whitespace-nowrap">${money(r.depositos)}</td>
-      <td class="p-3 whitespace-nowrap">${money(r.saldo)}</td>
-    </tr>
-  `).join("");
-
-  exportBtn.classList.toggle("hidden", filteredRows.length === 0);
+  rowCount.textContent = String(rows.length);
+  btnExport.disabled = rows.length === 0;
 }
 
-// CSV export (exporta lo filtrado si hay búsqueda)
-function toCSV(rows) {
-  const header = ["fecha","concepto","retiros","depositos","saldo"];
-  const esc = (s) => `"${String(s ?? "").replaceAll(`"`, `""`)}"`;
-  const lines = [
-    header.join(","),
-    ...rows.map(r => [r.fecha, r.concepto, r.retiros, r.depositos, r.saldo].map(esc).join(","))
-  ];
-  return lines.join("\n");
+function applyFilter() {
+  const q = (searchInput.value || "").trim().toLowerCase();
+  if (!q) {
+    filtered = movimientos.slice();
+  } else {
+    filtered = movimientos.filter((r) => {
+      const s = `${r.fecha} ${r.concepto} ${r.retiros} ${r.depositos} ${r.saldo}`.toLowerCase();
+      return s.includes(q);
+    });
+  }
+  renderTable(filtered);
 }
 
-exportBtn.addEventListener("click", () => {
-  const rowsToExport = (searchInput.value.trim() ? filteredRows : lastRows);
-  const csv = toCSV(rowsToExport);
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+function downloadCSV(rows) {
+  const header = ["fecha", "concepto", "retiros", "depositos", "saldo"];
+  const lines = [header.join(",")];
+
+  for (const r of rows) {
+    const line = [
+      `"${String(r.fecha || "").replaceAll('"', '""')}"`,
+      `"${String(r.concepto || "").replaceAll('"', '""')}"`,
+      Number(r.retiros || 0),
+      Number(r.depositos || 0),
+      Number(r.saldo || 0),
+    ].join(",");
+    lines.push(line);
+  }
+
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
+
   const a = document.createElement("a");
   a.href = url;
   a.download = "movimientos.csv";
   a.click();
+
   URL.revokeObjectURL(url);
-});
-
-// Buscador
-function applySearch() {
-  const q = (searchInput.value || "").trim().toLowerCase();
-  if (!q) {
-    render(lastRows);
-    return;
-  }
-
-  const match = (r) => {
-    const s = [
-      r.fecha,
-      r.concepto,
-      String(r.retiros ?? ""),
-      String(r.depositos ?? ""),
-      String(r.saldo ?? "")
-    ].join(" ").toLowerCase();
-    return s.includes(q);
-  };
-
-  render(lastRows.filter(match));
 }
-searchInput.addEventListener("input", applySearch);
 
-// Upload
-async function uploadPDF(file) {
-  if (!navigator.onLine) {
-    offlineBanner.classList.remove("hidden");
-    setStatus("⚠️ No tienes internet. Conéctate y vuelve a intentar.", "err");
-    return;
-  }
+// -------------------------
+// Network status
+// -------------------------
+function updateOnlineStatus() {
+  const offline = !navigator.onLine;
+  offlineBanner.classList.toggle("hidden", !offline);
 
-  setProcessing(true);
-  render([]);
-  modeBadge.classList.add("hidden");
-
-  try {
-    const fd = new FormData();
-    fd.append("pdf", file);
-
-    const res = await fetch("/api/upload", { method: "POST", body: fd });
-
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(txt || `HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-
-    if (!data.ok) throw new Error(data.error || "Error");
-
-    modeBadge.textContent = `modo: ${data.modo}`;
-    modeBadge.classList.remove("hidden");
-
-    lastRows = data.movimientos || [];
-    searchInput.value = "";
-    render(lastRows);
-
-    setStatus(`Listo ✅ (${data.modo}). Filas: ${lastRows.length}`, "ok");
-  } catch (err) {
-    console.error(err);
-    setStatus(`❌ ${err.message || "Error"}`, "err");
-  } finally {
-    setProcessing(false);
+  if (offline) {
+    setStatus("⚠️ Sin internet. No se puede procesar IA.", "warn");
   }
 }
 
-dropzone.addEventListener("click", () => {
-  if (isProcessing) return;
-  fileInput.click();
+window.addEventListener("online", updateOnlineStatus);
+window.addEventListener("offline", updateOnlineStatus);
+updateOnlineStatus();
+
+// Evitar cerrar durante proceso
+window.addEventListener("beforeunload", (e) => {
+  if (!loadingOverlay.classList.contains("hidden")) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
 });
 
-dropzone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  if (isProcessing) return;
-  dropzone.classList.add("ring-2", "ring-emerald-500/60");
-});
-dropzone.addEventListener("dragleave", () => {
-  dropzone.classList.remove("ring-2", "ring-emerald-500/60");
-});
-dropzone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dropzone.classList.remove("ring-2", "ring-emerald-500/60");
-  if (isProcessing) return;
-
-  const file = e.dataTransfer.files?.[0];
-  if (file) uploadPDF(file);
-});
+// -------------------------
+// Events
+// -------------------------
+btnPick.addEventListener("click", () => fileInput.click());
 
 fileInput.addEventListener("change", () => {
-  if (isProcessing) return;
-  const file = fileInput.files?.[0];
-  if (file) uploadPDF(file);
+  selectedFile = fileInput.files?.[0] || null;
+  if (!selectedFile) {
+    fileName.textContent = "No has seleccionado nada";
+    btnUpload.disabled = true;
+    return;
+  }
+
+  fileName.textContent = selectedFile.name;
+  btnUpload.disabled = false;
+  setStatus("Listo ✅ (archivo seleccionado).", "ok");
+});
+
+btnClear.addEventListener("click", () => {
+  selectedFile = null;
+  fileInput.value = "";
+  fileName.textContent = "No has seleccionado nada";
+  movimientos = [];
+  filtered = [];
+  searchInput.value = "";
+  renderTable([]);
+  btnUpload.disabled = true;
+  btnExport.disabled = true;
+  setStatus("Listo.", "info");
+});
+
+searchInput.addEventListener("input", applyFilter);
+
+btnExport.addEventListener("click", () => {
+  downloadCSV(filtered.length ? filtered : movimientos);
+});
+
+// -------------------------
+// Upload & process
+// -------------------------
+btnUpload.addEventListener("click", async () => {
+  if (!selectedFile) return;
+
+  if (!navigator.onLine) {
+    alert("Sin internet. Conéctate para poder procesar.");
+    setStatus("⚠️ Sin internet.", "warn");
+    return;
+  }
+
+  setLoading(true, "Subiendo PDF y procesando…");
+  setStatus("Procesando…", "info");
+
+  try {
+    const formData = new FormData();
+    formData.append("pdf", selectedFile);
+
+    const pass = (pdfPassword.value || "").trim();
+    formData.append("password", pass);
+
+    const resp = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await resp.json().catch(() => ({}));
+
+    // PDF protegido
+    if (resp.status === 401) {
+      setLoading(false);
+      setStatus(data?.error || "PDF protegido. Escribe el password y reintenta.", "warn");
+      pdfPassword.focus();
+      return;
+    }
+
+    if (!resp.ok) {
+      throw new Error(data?.error || "Error procesando PDF.");
+    }
+
+    movimientos = Array.isArray(data.movimientos) ? data.movimientos : [];
+    filtered = movimientos.slice();
+    applyFilter();
+
+    setLoading(false);
+
+    const modo = data?.modo ? String(data.modo) : "vision";
+    setStatus(`Listo ✅ (${modo}). Filas: ${movimientos.length}`, movimientos.length ? "ok" : "warn");
+
+    // Tip si salió vacío
+    if (movimientos.length === 0) {
+      alert(
+        "Se procesó pero salió 0 filas.\n\n" +
+        "Causas comunes:\n" +
+        "• El PDF es escaneado muy borroso\n" +
+        "• El PDF está protegido y falta/está mal el password\n" +
+        "• En Electron el server no puede escribir en tmp/uploads (permisos)\n\n" +
+        "Si estás en Electron: aplica el fix de RUNTIME_DIR (AppData) en main/server."
+      );
+    }
+  } catch (err) {
+    setLoading(false);
+    setStatus(`❌ ${err.message}`, "error");
+    alert(err.message);
+  }
 });
