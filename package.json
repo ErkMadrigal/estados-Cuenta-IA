@@ -43,10 +43,11 @@
         "to": "bin/qpdf.exe"
       },
        { "from": "bin/mutool.exe", "to": "bin/mutool.exe" },
-       { "from": "bin/*.dll", "to": "bin/" }
+       { "from": "bin/*.dll", "to": "bin/" },
+      { "from": ".env", "to": ".env" }
     ],
     "win": {
-      "icon": "assets/icon.ico",
+       "icon": "assets/icon_256x256.png",
       "target": "nsis",
       "artifactName": "EstadosCuentaAI-Setup.exe"
     },

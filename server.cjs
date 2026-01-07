@@ -1,4 +1,4 @@
-// server.cjs ✅ Express + RUNTIME_DIR + mutool (portable) + qpdf (decrypt) + IA
+// server.cjs ✅ Express + RUNTIME_DIR + mutool + qpdf + IA
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
@@ -8,21 +8,31 @@ const pdfParse = require("pdf-parse");
 const { spawn } = require("child_process");
 const os = require("os");
 
+// Electron app (para fallback de userData)
+let electronApp = null;
+try {
+  ({ app: electronApp } = require("electron"));
+} catch {}
+
 dotenv.config();
 
 const app = express();
 
 // =====================================================
-// Paths seguros (Electron)
+// Paths seguros (Electron) ✅ NO app.asar
 // =====================================================
-const BASE_DIR = process.env.RUNTIME_DIR || __dirname;
+const BASE_DIR =
+  process.env.RUNTIME_DIR ||
+  (electronApp
+    ? path.join(electronApp.getPath("userData"), "runtime")
+    : path.join(process.cwd(), "runtime"));
 
 const UPLOAD_DIR = path.join(BASE_DIR, "uploads");
 const TMP_DIR = path.join(BASE_DIR, "tmp");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 for (const dir of [UPLOAD_DIR, TMP_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
 }
 
 // =====================================================
@@ -110,17 +120,15 @@ function dedupeMovimientos(rows) {
 }
 
 // =====================================================
-// BIN paths (dev vs packaged) ✅ FIX REAL
+// BIN paths (dev vs packaged)
 // =====================================================
 function getBinPath(exeNameWin, exeNameUnix) {
   const exe = os.platform() === "win32" ? exeNameWin : exeNameUnix;
 
   const isPackaged = process.env.ELECTRON_IS_PACKAGED === "1";
   if (!isPackaged) {
-    // ✅ DEV: bin dentro del proyecto
     return path.join(__dirname, "bin", exe);
   }
-  // ✅ PACKAGED: resources/bin
   return path.join(process.resourcesPath, "bin", exe);
 }
 
@@ -132,18 +140,15 @@ function getQpdfPath() {
 }
 
 // =====================================================
-// mutool: PDF -> PNG (portable)
+// mutool: PDF -> PNG
 // =====================================================
 function renderWithMutool(pdfPath, page, outPng, dpi = 220) {
   return new Promise((resolve, reject) => {
     const mutool = getMutoolPath();
     if (!fs.existsSync(mutool)) {
-      return reject(
-        new Error(`No encuentro mutool en: ${mutool}. Ponlo en /bin y agrégalo a extraResources.`)
-      );
+      return reject(new Error(`No encuentro mutool en: ${mutool}`));
     }
 
-    // mutool draw -o out.png -r 220 -F png in.pdf 1
     const args = ["draw", "-o", outPng, "-r", String(dpi), "-F", "png", pdfPath, String(page)];
     const p = spawn(mutool, args, { windowsHide: true });
 
@@ -175,25 +180,43 @@ function decryptPdfWithQpdf(inputPath, password, outPath) {
     const qpdf = getQpdfPath();
 
     if (!fs.existsSync(qpdf)) {
-      return reject(
-        new Error(`No encuentro qpdf en: ${qpdf}. Ponlo en /bin y agrégalo a extraResources.`)
-      );
+      return reject(new Error(`No encuentro qpdf en: ${qpdf}`));
     }
 
-    const args = [`--password=${password}`, "--decrypt", inputPath, outPath];
+    const pass = String(password ?? "").replace(/\r?\n/g, "").trim();
+    const passFile = path.join(TMP_DIR, `qpdf-pass-${Date.now()}.txt`);
+    fs.writeFileSync(passFile, pass, "utf8");
+
+    const args = ["--password-file", passFile, "--decrypt", inputPath, outPath];
     const p = spawn(qpdf, args, { windowsHide: true });
 
-    let err = "";
-    p.stderr.on("data", (d) => (err += d.toString()));
+    let stderr = "";
+    p.stderr.on("data", (d) => (stderr += d.toString()));
 
     p.on("close", (code) => {
-      if (code === 0) return resolve(outPath);
-      reject(new Error(`Password incorrecto o no se pudo desencriptar. ${err}`.trim()));
+      try { fs.unlinkSync(passFile); } catch {}
+
+      if (code === 0 && fs.existsSync(outPath)) return resolve(outPath);
+
+      // 👇 Deja el stderr real para depurar
+      const raw = (stderr || "").trim();
+      const low = raw.toLowerCase();
+
+      if (low.includes("invalid password") || low.includes("bad password")) {
+        return reject(new Error("Password incorrecto (qpdf). Ojo: distingue mayúsculas/espacios."));
+      }
+
+      // Si qpdf dice "not encrypted" o algo similar, NO era password
+      if (low.includes("not encrypted") || low.includes("unencrypted")) {
+        return reject(new Error("El PDF NO estaba encriptado (qpdf)."));
+      }
+
+      reject(new Error(`No se pudo desencriptar con qpdf: ${raw || "sin detalle"}`));
     });
   });
 }
 
-// Heurística simple: si pdf-parse truena con password/encrypted => protegido
+// ✅ Mejor detección de PDF encriptado (evita falsos positivos)
 async function isPdfEncrypted(filePath) {
   try {
     const buf = fs.readFileSync(filePath);
@@ -201,9 +224,18 @@ async function isPdfEncrypted(filePath) {
     return false;
   } catch (e) {
     const msg = String(e?.message || "").toLowerCase();
+    // solo marcamos encriptado si el mensaje apunta a password/encrypted
     return msg.includes("password") || msg.includes("encrypted") || msg.includes("security");
   }
 }
+
+// =====================================================
+// OpenAI Responses API (strict JSON schema)
+// (se queda igual a tu versión)
+// =====================================================
+// ... aquí va TODO tu bloque openaiStructured + schemas + detect/extract ...
+// 👇 PÉGALO tal cual lo tenías para no romper nada
+
 
 // =====================================================
 // OpenAI Responses API (strict JSON schema)
@@ -409,7 +441,7 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: "No llegó archivo PDF." });
 
-    const password = String(req.body?.password || "").trim();
+  const password = String(req.body?.password || "").replace(/\r?\n/g, "").trim();
 
     // logs útiles para debug
     console.log("mutoolPath =", getMutoolPath());
