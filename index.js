@@ -208,6 +208,7 @@ async function openaiStructured({ content, schema, model = "gpt-5-mini" }) {
     },
   };
 
+
   const resp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {

@@ -4,141 +4,124 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <script src="https://cdn.tailwindcss.com"></script>
-  <title>EstadosCuentaAI</title>
+  <title>PDF → Tabla (IA)</title>
 </head>
 
-<body class="bg-slate-950 text-slate-100 min-h-screen">
-
-  <!-- OFFLINE BANNER -->
-  <div id="offlineBanner" class="hidden sticky top-0 z-50">
-    <div class="bg-red-600 text-white px-4 py-2 text-sm text-center">
-      ⚠️ Sin internet. Revisa tu conexión.
-    </div>
-  </div>
-
+<body class="bg-slate-950 text-slate-100">
   <!-- OVERLAY LOADING -->
   <div id="loadingOverlay" class="fixed inset-0 z-50 hidden">
     <div class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
-
     <div class="relative h-full w-full flex items-center justify-center p-6">
-      <div class="w-full max-w-md rounded-2xl bg-slate-900/80 border border-slate-700 shadow-xl p-6">
+      <div class="max-w-md w-full rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
         <div class="flex items-center gap-3">
-          <div class="h-10 w-10 rounded-full border-4 border-slate-300 border-t-transparent animate-spin"></div>
-          <div>
-            <div class="font-semibold text-lg">Procesando estado de cuenta…</div>
-            <div class="text-slate-300 text-sm" id="loadingText">No cierres la app ni el navegador.</div>
-          </div>
+          <div class="h-6 w-6 rounded-full border-2 border-slate-200 border-t-transparent animate-spin"></div>
+          <div class="text-slate-200 font-medium">Procesando…</div>
         </div>
-        <div class="mt-4 text-xs text-slate-400">
-          Esto puede tardar dependiendo del PDF.
-        </div>
+        <div class="mt-2 text-sm text-slate-400">Esto puede tardar dependiendo del PDF.</div>
       </div>
     </div>
   </div>
 
-  <main class="max-w-6xl mx-auto p-6">
-    <header class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-bold">EstadosCuentaAI</h1>
-        <p class="text-slate-300 text-sm">
-          Sube un estado de cuenta (incluso escaneado). Si está protegido, escribe el password.
-        </p>
-      </div>
+  <main class="min-h-screen flex items-center justify-center p-6">
+    <div class="max-w-3xl w-full">
+      <div class="rounded-3xl border border-slate-800 bg-slate-900/40 p-6 shadow-xl">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <h1 class="text-xl font-semibold">EstadosCuentaAI</h1>
+          <div class="flex gap-2">
+            <button id="btnConfig"
+              class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition font-medium">
+              Config
+            </button>
 
-      <div class="flex gap-2">
-        <button id="btnPick"
-          class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 transition font-medium">
-          Elegir PDF
-        </button>
+            <button id="btnPick"
+              class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 transition font-medium">
+              Elegir PDF
+            </button>
 
-        <button id="btnUpload"
-          class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled>
-          Procesar
-        </button>
-      </div>
-    </header>
-
-    <!-- Controls -->
-    <section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4">
-        <div class="text-sm text-slate-300 mb-2">Archivo</div>
-        <div id="fileName" class="text-slate-100 font-medium break-words">No has seleccionado nada</div>
-        <input id="fileInput" type="file" accept="application/pdf" class="hidden" />
-        <div class="text-xs text-slate-400 mt-2">
-          Tip: si sale “PDF protegido”, escribe el password y reintenta.
-        </div>
-      </div>
-
-      <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4">
-        <div class="text-sm text-slate-300 mb-2">Password (solo si está protegido)</div>
-
-        <div id="passwordWrap" class="space-y-2">
-          <input id="pdfPassword"
-            type="password"
-            placeholder="Escribe la contraseña…"
-            class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-indigo-500"/>
-
-          <div class="text-xs text-slate-400">
-            La contraseña solo se usa para desencriptar y procesar.
+            <button id="btnUpload"
+              class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled>
+              Procesar
+            </button>
           </div>
         </div>
-      </div>
 
-      <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4">
-        <div class="text-sm text-slate-300 mb-2">Estado</div>
-        <div id="status"
-          class="text-sm rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-200">
-          Listo.
+        <input id="pdfInput" type="file" accept="application/pdf" class="hidden" />
+
+        <div class="mt-5 grid gap-4">
+          <div class="rounded-2xl border border-slate-800 bg-black/30 p-4">
+            <div class="text-sm text-slate-300 mb-2">PDF seleccionado:</div>
+            <div id="fileName" class="text-slate-100 font-medium">Ninguno</div>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-black/30 p-4">
+            <label class="text-sm text-slate-300">Password (si el PDF está protegido)</label>
+            <input id="passwordInput" type="text" placeholder="Opcional"
+              class="mt-2 w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-indigo-500"/>
+          </div>
+
+          <div id="statusBox" class="rounded-2xl border border-slate-800 bg-black/30 p-4 text-sm text-slate-300">
+            Listo.
+          </div>
+
+          <!-- ✅ Resultados en TABLA -->
+          <div class="rounded-2xl border border-slate-800 bg-black/40 p-4 overflow-auto max-h-[420px]">
+            <div class="flex items-center justify-between gap-2 mb-3">
+              <div class="text-sm text-slate-300">
+                Movimientos: <span id="movCount" class="font-semibold text-slate-100">0</span>
+              </div>
+
+              <button id="btnToggleRaw"
+                class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 transition text-sm font-medium" style="display: none;">
+                Ver JSON
+              </button>
+            </div>
+
+            <div id="tableWrap"></div>
+
+            <!-- JSON crudo (oculto) -->
+            <pre id="rawBox"
+                class="hidden mt-4 rounded-xl border border-slate-800 bg-black/40 p-4 text-xs overflow-auto"></pre>
+          </div>
+
         </div>
-        <div class="mt-3 flex gap-2">
-          <button id="btnExport"
-            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled>
-            Exportar CSV
-          </button>
-          <button id="btnClear"
-            class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition text-sm">
-            Limpiar
-          </button>
-        </div>
       </div>
-    </section>
-
-    <!-- Search -->
-    <section class="mt-6 flex flex-col md:flex-row md:items-center gap-3">
-      <input id="searchInput" type="text" placeholder="Buscar en la tabla (fecha, concepto, montos)…"
-        class="w-full md:flex-1 px-4 py-2 rounded-xl bg-slate-900/60 border border-slate-800 outline-none focus:border-indigo-500"/>
-
-      <div class="text-sm text-slate-300">
-        Filas: <span id="rowCount" class="font-semibold text-slate-100">0</span>
-      </div>
-    </section>
-
-    <!-- Table -->
-    <section class="mt-4 rounded-2xl border border-slate-800 overflow-hidden">
-      <div class="overflow-auto">
-        <table class="min-w-full text-sm">
-          <thead class="bg-slate-900">
-            <tr class="text-left text-slate-200">
-              <th class="px-4 py-3 whitespace-nowrap">Fecha</th>
-              <th class="px-4 py-3 min-w-[360px]">Concepto</th>
-              <th class="px-4 py-3 whitespace-nowrap">Retiros</th>
-              <th class="px-4 py-3 whitespace-nowrap">Depósitos</th>
-              <th class="px-4 py-3 whitespace-nowrap">Saldo</th>
-            </tr>
-          </thead>
-          <tbody id="tableBody" class="divide-y divide-slate-800 bg-slate-950">
-            <!-- rows -->
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <footer class="mt-6 text-xs text-slate-500">
-      Si un PDF está protegido, escribe el password y vuelve a procesar.
-    </footer>
+    </div>
   </main>
+
+  <!-- ✅ MODAL CONFIG -->
+  <div id="configModal" class="fixed inset-0 hidden items-center justify-center p-6 z-50">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+
+    <div class="relative w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-700 p-6 shadow-xl">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-semibold">Configurar API Key</h2>
+        <button id="btnConfigClose" class="text-slate-300 hover:text-white">✕</button>
+      </div>
+
+      <p class="text-slate-300 text-sm mb-4">
+        Pega tu <b>OpenAI API Key</b>. Se guardará localmente y la app la usará para procesar PDFs.
+      </p>
+
+      <label class="text-sm text-slate-300">OpenAI API Key</label>
+      <input id="apiKeyInput" type="password" placeholder="sk-..."
+        class="mt-1 w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-indigo-500"/>
+
+      <div class="flex flex-wrap gap-2 mt-4">
+        <button id="btnSaveKey" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 transition font-medium">
+          Guardar
+        </button>
+        <button id="btnShowKey" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition font-medium">
+          Mostrar
+        </button>
+        <button id="btnOpenConfigFolder" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 transition font-medium">
+          Abrir carpeta
+        </button>
+      </div>
+
+      <div id="configMsg" class="mt-3 text-sm text-slate-300"></div>
+    </div>
+  </div>
 
   <script src="./app.js"></script>
 </body>

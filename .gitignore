@@ -67,3 +67,5 @@ logs/
 .cache/
 .temp/
 .tmp/
+dist.zip
+dist/

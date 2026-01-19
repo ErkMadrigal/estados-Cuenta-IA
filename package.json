@@ -30,24 +30,23 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "server.cjs",
-      "public/**/*"
+      "public/**/*",
+      "bin/**/*"
     ],
     "extraResources": [
-      {
-        "from": ".env",
-        "to": ".env"
-      },
       {
         "from": "bin/qpdf.exe",
         "to": "bin/qpdf.exe"
       },
-       { "from": "bin/mutool.exe", "to": "bin/mutool.exe" },
-       { "from": "bin/*.dll", "to": "bin/" },
-      { "from": ".env", "to": ".env" }
+      {
+        "from": "bin/mutool.exe",
+        "to": "bin/mutool.exe"
+      }
     ],
     "win": {
-       "icon": "assets/icon_256x256.png",
+      "icon": "assets/icon_256x256.png",
       "target": "nsis",
       "artifactName": "EstadosCuentaAI-Setup.exe"
     },

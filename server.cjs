@@ -1,4 +1,4 @@
-// server.cjs ✅ Express + RUNTIME_DIR + mutool + qpdf + IA
+// server.cjs ✅ Express + RUNTIME_DIR + mutool + qpdf + IA + autocorrección retiros/depositos
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
@@ -8,14 +8,83 @@ const pdfParse = require("pdf-parse");
 const { spawn } = require("child_process");
 const os = require("os");
 
-// Electron app (para fallback de userData)
+// Electron app (para userData)
 let electronApp = null;
 try {
   ({ app: electronApp } = require("electron"));
 } catch {}
 
-dotenv.config();
+// --------- seguridad de logs ----------
+process.on("uncaughtException", (e) => console.error("uncaughtException", e));
+process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
 
+// --------- fetch fallback ----------
+const fetchFn =
+  global.fetch ||
+  ((...args) => import("node-fetch").then(({ default: f }) => f(...args)));
+
+// -----------------------------------------------------
+// ✅ Cargar key desde DEV (.env) o PROD (config.json)
+// -----------------------------------------------------
+function getUserDataPathSafe() {
+  try {
+    if (electronApp && typeof electronApp.getPath === "function") {
+      return electronApp.getPath("userData");
+    }
+  } catch {}
+  return null;
+}
+
+function tryLoadDotenvFrom(p) {
+  try {
+    if (p && fs.existsSync(p)) {
+      dotenv.config({ path: p });
+      console.log("[env] ✅ .env cargado desde:", p);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function tryLoadKeyFromConfigJson() {
+  const userData = getUserDataPathSafe();
+  if (!userData) return false;
+
+  const cfgPath = path.join(userData, "config.json");
+  try {
+    if (!fs.existsSync(cfgPath)) return false;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const key = String(cfg?.OPENAI_API_KEY || "").trim();
+    if (key) {
+      process.env.OPENAI_API_KEY = key;
+      console.log("[env] ✅ OPENAI_API_KEY cargada desde config.json");
+      return true;
+    }
+  } catch (e) {
+    console.warn("[env] ⚠️ No pude leer config.json:", e?.message || e);
+  }
+  return false;
+}
+
+function loadRuntimeSecrets() {
+  // 1) si ya viene por env (main.js), listo
+  if (process.env.OPENAI_API_KEY && String(process.env.OPENAI_API_KEY).trim()) return;
+
+  // 2) DEV: .env junto al server
+  tryLoadDotenvFrom(path.join(__dirname, ".env"));
+
+  // 3) PROD: userData/config.json
+  if (!process.env.OPENAI_API_KEY) tryLoadKeyFromConfigJson();
+
+  // 4) fallback opcional: userData/.env
+  if (!process.env.OPENAI_API_KEY) {
+    const userData = getUserDataPathSafe();
+    if (userData) tryLoadDotenvFrom(path.join(userData, ".env"));
+  }
+}
+loadRuntimeSecrets();
+
+// -----------------------------------------------------
 const app = express();
 
 // =====================================================
@@ -23,17 +92,15 @@ const app = express();
 // =====================================================
 const BASE_DIR =
   process.env.RUNTIME_DIR ||
-  (electronApp
-    ? path.join(electronApp.getPath("userData"), "runtime")
+  (getUserDataPathSafe()
+    ? path.join(getUserDataPathSafe(), "runtime")
     : path.join(process.cwd(), "runtime"));
 
 const UPLOAD_DIR = path.join(BASE_DIR, "uploads");
 const TMP_DIR = path.join(BASE_DIR, "tmp");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
-for (const dir of [UPLOAD_DIR, TMP_DIR]) {
-  fs.mkdirSync(dir, { recursive: true });
-}
+for (const dir of [UPLOAD_DIR, TMP_DIR]) fs.mkdirSync(dir, { recursive: true });
 
 // =====================================================
 // Middleware
@@ -41,9 +108,7 @@ for (const dir of [UPLOAD_DIR, TMP_DIR]) {
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(PUBLIC_DIR));
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-});
+app.get("/", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -120,15 +185,117 @@ function dedupeMovimientos(rows) {
 }
 
 // =====================================================
+// ✅ Post-proceso inteligente (evita swap Retiros/Depósitos)
+// =====================================================
+function near(a, b, tol = 0.02) {
+  return Math.abs(a - b) <= tol;
+}
+
+function clampMoney(n) {
+  n = safeNumber(n);
+  return n < 0 ? Math.abs(n) : n;
+}
+
+function scoreSwapNeed(rows) {
+  let good = 0;
+  let swappedWouldBeGood = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1];
+    const cur = rows[i];
+
+    const s0 = safeNumber(prev.saldo);
+    const s1 = safeNumber(cur.saldo);
+    if (!Number.isFinite(s0) || !Number.isFinite(s1)) continue;
+
+    const delta = s1 - s0;
+
+    const r = clampMoney(cur.retiros);
+    const d = clampMoney(cur.depositos);
+
+    const expected = d - r;
+    const expectedSwap = r - d;
+
+    if (near(delta, expected, 0.5)) good++;
+    if (near(delta, expectedSwap, 0.5)) swappedWouldBeGood++;
+  }
+
+  return { good, swappedWouldBeGood };
+}
+
+function fixRowBySaldo(prevSaldo, row) {
+  const curSaldo = safeNumber(row.saldo);
+  if (!Number.isFinite(prevSaldo) || !Number.isFinite(curSaldo)) return row;
+
+  const delta = curSaldo - prevSaldo;
+
+  const r = clampMoney(row.retiros);
+  const d = clampMoney(row.depositos);
+
+  if (r > 0 && d > 0) {
+    if (delta > 0) {
+      row.retiros = 0;
+      row.depositos = Math.max(r, d);
+    } else if (delta < 0) {
+      row.depositos = 0;
+      row.retiros = Math.max(r, d);
+    }
+    return row;
+  }
+
+  if (delta > 0 && r > 0 && d === 0) {
+    row.depositos = r;
+    row.retiros = 0;
+  }
+
+  if (delta < 0 && d > 0 && r === 0) {
+    row.retiros = d;
+    row.depositos = 0;
+  }
+
+  return row;
+}
+
+function postProcessMovimientos(movs) {
+  const rows = movs.map((m) => ({
+    ...m,
+    retiros: clampMoney(m.retiros),
+    depositos: clampMoney(m.depositos),
+    saldo: clampMoney(m.saldo),
+  }));
+
+  const { good, swappedWouldBeGood } = scoreSwapNeed(rows);
+  const doGlobalSwap = swappedWouldBeGood >= good + 3 && swappedWouldBeGood >= 5;
+
+  if (doGlobalSwap) {
+    for (const r of rows) {
+      const tmp = r.retiros;
+      r.retiros = r.depositos;
+      r.depositos = tmp;
+    }
+  }
+
+  for (let i = 1; i < rows.length; i++) {
+    rows[i] = fixRowBySaldo(safeNumber(rows[i - 1].saldo), rows[i]);
+  }
+
+  for (const r of rows) {
+    if (r.retiros > 0 && r.depositos > 0) {
+      if (r.retiros >= r.depositos) r.depositos = 0;
+      else r.retiros = 0;
+    }
+  }
+
+  return rows;
+}
+
+// =====================================================
 // BIN paths (dev vs packaged)
 // =====================================================
 function getBinPath(exeNameWin, exeNameUnix) {
   const exe = os.platform() === "win32" ? exeNameWin : exeNameUnix;
-
   const isPackaged = process.env.ELECTRON_IS_PACKAGED === "1";
-  if (!isPackaged) {
-    return path.join(__dirname, "bin", exe);
-  }
+  if (!isPackaged) return path.join(__dirname, "bin", exe);
   return path.join(process.resourcesPath, "bin", exe);
 }
 
@@ -145,9 +312,7 @@ function getQpdfPath() {
 function renderWithMutool(pdfPath, page, outPng, dpi = 220) {
   return new Promise((resolve, reject) => {
     const mutool = getMutoolPath();
-    if (!fs.existsSync(mutool)) {
-      return reject(new Error(`No encuentro mutool en: ${mutool}`));
-    }
+    if (!fs.existsSync(mutool)) return reject(new Error(`No encuentro mutool en: ${mutool}`));
 
     const args = ["draw", "-o", outPng, "-r", String(dpi), "-F", "png", pdfPath, String(page)];
     const p = spawn(mutool, args, { windowsHide: true });
@@ -178,10 +343,7 @@ async function renderPagesToImages(pdfPath, pages, { savePath, saveFilename, den
 function decryptPdfWithQpdf(inputPath, password, outPath) {
   return new Promise((resolve, reject) => {
     const qpdf = getQpdfPath();
-
-    if (!fs.existsSync(qpdf)) {
-      return reject(new Error(`No encuentro qpdf en: ${qpdf}`));
-    }
+    if (!fs.existsSync(qpdf)) return reject(new Error(`No encuentro qpdf en: ${qpdf}`));
 
     const pass = String(password ?? "").replace(/\r?\n/g, "").trim();
     const passFile = path.join(TMP_DIR, `qpdf-pass-${Date.now()}.txt`);
@@ -198,25 +360,20 @@ function decryptPdfWithQpdf(inputPath, password, outPath) {
 
       if (code === 0 && fs.existsSync(outPath)) return resolve(outPath);
 
-      // 👇 Deja el stderr real para depurar
       const raw = (stderr || "").trim();
       const low = raw.toLowerCase();
 
       if (low.includes("invalid password") || low.includes("bad password")) {
         return reject(new Error("Password incorrecto (qpdf). Ojo: distingue mayúsculas/espacios."));
       }
-
-      // Si qpdf dice "not encrypted" o algo similar, NO era password
       if (low.includes("not encrypted") || low.includes("unencrypted")) {
         return reject(new Error("El PDF NO estaba encriptado (qpdf)."));
       }
-
       reject(new Error(`No se pudo desencriptar con qpdf: ${raw || "sin detalle"}`));
     });
   });
 }
 
-// ✅ Mejor detección de PDF encriptado (evita falsos positivos)
 async function isPdfEncrypted(filePath) {
   try {
     const buf = fs.readFileSync(filePath);
@@ -224,18 +381,9 @@ async function isPdfEncrypted(filePath) {
     return false;
   } catch (e) {
     const msg = String(e?.message || "").toLowerCase();
-    // solo marcamos encriptado si el mensaje apunta a password/encrypted
     return msg.includes("password") || msg.includes("encrypted") || msg.includes("security");
   }
 }
-
-// =====================================================
-// OpenAI Responses API (strict JSON schema)
-// (se queda igual a tu versión)
-// =====================================================
-// ... aquí va TODO tu bloque openaiStructured + schemas + detect/extract ...
-// 👇 PÉGALO tal cual lo tenías para no romper nada
-
 
 // =====================================================
 // OpenAI Responses API (strict JSON schema)
@@ -266,7 +414,12 @@ function tryParseJsonLoose(outText) {
 }
 
 async function openaiStructured({ content, schema, model = "gpt-5-mini" }) {
-  if (!process.env.OPENAI_API_KEY) throw new Error("Falta OPENAI_API_KEY en .env");
+  if (!process.env.OPENAI_API_KEY) {
+    const userData = getUserDataPathSafe();
+    throw new Error(
+      `Falta OPENAI_API_KEY. Ábre Config y pégala. (${userData ? path.join(userData, "config.json") : "sin userData"})`
+    );
+  }
 
   const payload = {
     model,
@@ -281,7 +434,7 @@ async function openaiStructured({ content, schema, model = "gpt-5-mini" }) {
     },
   };
 
-  const resp = await fetch("https://api.openai.com/v1/responses", {
+  const resp = await fetchFn("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -439,11 +592,20 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
   let workingPdfPath = uploadedPath;
 
   try {
+    // recargar secrets por si se guardó key hace segundos
+    loadRuntimeSecrets();
+
     if (!req.file) return res.status(400).json({ ok: false, error: "No llegó archivo PDF." });
 
-  const password = String(req.body?.password || "").replace(/\r?\n/g, "").trim();
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(503).json({
+        ok: false,
+        error: "Falta OPENAI_API_KEY. Abre Configuración y pégala.",
+      });
+    }
 
-    // logs útiles para debug
+    const password = String(req.body?.password || "").replace(/\r?\n/g, "").trim();
+
     console.log("mutoolPath =", getMutoolPath());
     console.log("qpdfPath =", getQpdfPath());
     console.log("TMP_DIR =", TMP_DIR);
@@ -469,7 +631,8 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
     let pages = await detectTransactionPages(workingPdfPath, pageCount);
     if (!pages.length) pages = Array.from({ length: Math.min(6, pageCount) }, (_, i) => i + 1);
 
-    const movimientos = await extractMovimientosFromPages(workingPdfPath, pages);
+    let movimientos = await extractMovimientosFromPages(workingPdfPath, pages);
+    movimientos = postProcessMovimientos(movimientos);
 
     return res.json({
       ok: true,
@@ -478,10 +641,7 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
       movimientos,
     });
   } catch (err) {
-    return res.status(500).json({
-      ok: false,
-      error: err.message || "No se pudo procesar el PDF",
-    });
+    return res.status(500).json({ ok: false, error: err?.message || "No se pudo procesar el PDF" });
   } finally {
     cleanupFile(uploadedPath);
     if (workingPdfPath && workingPdfPath !== uploadedPath) cleanupFile(workingPdfPath);
@@ -497,7 +657,12 @@ function startServer(port = process.env.PORT || 3000) {
   return new Promise((resolve, reject) => {
     try {
       if (serverInstance) return resolve(port);
-      serverInstance = app.listen(port, () => resolve(port));
+
+      serverInstance = app.listen(port, () => {
+        console.log("[server] ✅ running on", port);
+        resolve(port);
+      });
+
       serverInstance.on("error", reject);
     } catch (e) {
       reject(e);

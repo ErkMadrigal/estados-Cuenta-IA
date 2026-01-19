@@ -1,57 +1,67 @@
-// public/app.js
-let selectedFile = null;
-let movimientos = [];
-let filtered = [];
+// public/app.js ✅ completo (tabla + config + upload)
 
+// -------------------------
 // DOM
-const fileInput = document.getElementById("fileInput");
+// -------------------------
 const btnPick = document.getElementById("btnPick");
 const btnUpload = document.getElementById("btnUpload");
-const btnExport = document.getElementById("btnExport");
-const btnClear = document.getElementById("btnClear");
-
+const pdfInput = document.getElementById("pdfInput");
+const passwordInput = document.getElementById("passwordInput");
 const fileName = document.getElementById("fileName");
-const statusEl = document.getElementById("status");
+const statusBox = document.getElementById("statusBox");
 const loadingOverlay = document.getElementById("loadingOverlay");
-const loadingText = document.getElementById("loadingText");
 
-const pdfPassword = document.getElementById("pdfPassword");
-const searchInput = document.getElementById("searchInput");
-const tableBody = document.getElementById("tableBody");
-const rowCount = document.getElementById("rowCount");
+// Result UI
+const tableWrap = document.getElementById("tableWrap");
+const movCount = document.getElementById("movCount");
+const btnToggleRaw = document.getElementById("btnToggleRaw");
+const rawBox = document.getElementById("rawBox");
 
-const offlineBanner = document.getElementById("offlineBanner");
+// Config modal
+const btnConfig = document.getElementById("btnConfig");
+const configModal = document.getElementById("configModal");
+const btnConfigClose = document.getElementById("btnConfigClose");
+const apiKeyInput = document.getElementById("apiKeyInput");
+const btnSaveKey = document.getElementById("btnSaveKey");
+const btnShowKey = document.getElementById("btnShowKey");
+const btnOpenConfigFolder = document.getElementById("btnOpenConfigFolder");
+const configMsg = document.getElementById("configMsg");
+
+// ✅ URL robusta: mismo origin/puerto de la UI
+const UPLOAD_URL = new URL("/api/upload", window.location.origin).toString();
 
 // -------------------------
-// UI helpers
+// helpers UI
 // -------------------------
-function setStatus(msg, type = "info") {
-  statusEl.textContent = msg;
-
-  statusEl.classList.remove(
-    "border-slate-800",
-    "border-emerald-600",
-    "border-red-600",
-    "border-amber-500"
-  );
-
-  if (type === "ok") statusEl.classList.add("border-emerald-600");
-  else if (type === "error") statusEl.classList.add("border-red-600");
-  else if (type === "warn") statusEl.classList.add("border-amber-500");
-  else statusEl.classList.add("border-slate-800");
+function setLoading(v) {
+  if (!loadingOverlay) return;
+  loadingOverlay.classList.toggle("hidden", !v);
 }
 
-function setLoading(isLoading, text = "No cierres la app ni el navegador.") {
-  loadingText.textContent = text;
-  loadingOverlay.classList.toggle("hidden", !isLoading);
-
-  // bloquear interacción
-  document.body.style.pointerEvents = isLoading ? "none" : "auto";
-  loadingOverlay.style.pointerEvents = "auto";
+function setStatus(text, type = "info") {
+  statusBox.textContent = text;
+  const base = "rounded-2xl border bg-black/30 p-4 text-sm ";
+  if (type === "error") statusBox.className = base + "border-red-900/60 text-red-300";
+  else if (type === "ok") statusBox.className = base + "border-emerald-900/60 text-emerald-300";
+  else if (type === "warn") statusBox.className = base + "border-yellow-900/60 text-yellow-200";
+  else statusBox.className = base + "border-slate-800 text-slate-300";
 }
 
-function escapeHtml(str) {
-  return String(str || "")
+function hasNative() {
+  return typeof window !== "undefined" && window.native;
+}
+
+function money(n) {
+  const x = Number(n || 0);
+  try {
+    return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(x);
+  } catch {
+    return String(x.toFixed(2));
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -59,197 +69,207 @@ function escapeHtml(str) {
     .replaceAll("'", "&#039;");
 }
 
-function fmtMoney(n) {
-  const num = Number(n || 0);
-  if (!Number.isFinite(num)) return "0";
-  return num.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function renderTable(rows) {
-  tableBody.innerHTML = "";
-
-  for (const r of rows) {
-    const tr = document.createElement("tr");
-    tr.className = "hover:bg-slate-900/40 transition";
-
-    tr.innerHTML = `
-      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${escapeHtml(r.fecha)}</td>
-      <td class="px-4 py-3 text-slate-100">${escapeHtml(r.concepto)}</td>
-      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${fmtMoney(r.retiros)}</td>
-      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${fmtMoney(r.depositos)}</td>
-      <td class="px-4 py-3 whitespace-nowrap text-slate-200">${fmtMoney(r.saldo)}</td>
-    `;
-    tableBody.appendChild(tr);
-  }
-
-  rowCount.textContent = String(rows.length);
-  btnExport.disabled = rows.length === 0;
-}
-
-function applyFilter() {
-  const q = (searchInput.value || "").trim().toLowerCase();
-  if (!q) {
-    filtered = movimientos.slice();
-  } else {
-    filtered = movimientos.filter((r) => {
-      const s = `${r.fecha} ${r.concepto} ${r.retiros} ${r.depositos} ${r.saldo}`.toLowerCase();
-      return s.includes(q);
-    });
-  }
-  renderTable(filtered);
-}
-
-function downloadCSV(rows) {
-  const header = ["fecha", "concepto", "retiros", "depositos", "saldo"];
-  const lines = [header.join(",")];
-
-  for (const r of rows) {
-    const line = [
-      `"${String(r.fecha || "").replaceAll('"', '""')}"`,
-      `"${String(r.concepto || "").replaceAll('"', '""')}"`,
-      Number(r.retiros || 0),
-      Number(r.depositos || 0),
-      Number(r.saldo || 0),
-    ].join(",");
-    lines.push(line);
-  }
-
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "movimientos.csv";
-  a.click();
-
-  URL.revokeObjectURL(url);
-}
-
 // -------------------------
-// Network status
+// Tabla render
 // -------------------------
-function updateOnlineStatus() {
-  const offline = !navigator.onLine;
-  offlineBanner.classList.toggle("hidden", !offline);
+function renderTable(movs = []) {
+  if (!tableWrap) return;
 
-  if (offline) {
-    setStatus("⚠️ Sin internet. No se puede procesar IA.", "warn");
-  }
-}
+  movCount.textContent = String(movs.length || 0);
 
-window.addEventListener("online", updateOnlineStatus);
-window.addEventListener("offline", updateOnlineStatus);
-updateOnlineStatus();
-
-// Evitar cerrar durante proceso
-window.addEventListener("beforeunload", (e) => {
-  if (!loadingOverlay.classList.contains("hidden")) {
-    e.preventDefault();
-    e.returnValue = "";
-  }
-});
-
-// -------------------------
-// Events
-// -------------------------
-btnPick.addEventListener("click", () => fileInput.click());
-
-fileInput.addEventListener("change", () => {
-  selectedFile = fileInput.files?.[0] || null;
-  if (!selectedFile) {
-    fileName.textContent = "No has seleccionado nada";
-    btnUpload.disabled = true;
+  if (!movs.length) {
+    tableWrap.innerHTML = `<div class="text-slate-400 text-sm">Sin movimientos.</div>`;
     return;
   }
 
-  fileName.textContent = selectedFile.name;
-  btnUpload.disabled = false;
-  setStatus("Listo ✅ (archivo seleccionado).", "ok");
-});
+  tableWrap.innerHTML = `
+    <table class="min-w-full text-sm">
+      <thead class="sticky top-0 bg-slate-950/90 backdrop-blur border-b border-slate-800">
+        <tr class="text-slate-300">
+          <th class="text-left py-2 px-2 w-[110px]">Fecha</th>
+          <th class="text-left py-2 px-2">Concepto</th>
+          <th class="text-right py-2 px-2 w-[140px]">Retiros</th>
+          <th class="text-right py-2 px-2 w-[140px]">Depósitos</th>
+          <th class="text-right py-2 px-2 w-[140px]">Saldo</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800/60">
+        ${movs
+          .map((m) => {
+            const r = Number(m.retiros || 0);
+            const d = Number(m.depositos || 0);
+            const s = Number(m.saldo || 0);
 
-btnClear.addEventListener("click", () => {
-  selectedFile = null;
-  fileInput.value = "";
-  fileName.textContent = "No has seleccionado nada";
-  movimientos = [];
-  filtered = [];
-  searchInput.value = "";
-  renderTable([]);
-  btnUpload.disabled = true;
-  btnExport.disabled = true;
-  setStatus("Listo.", "info");
-});
+            return `
+              <tr class="hover:bg-white/5">
+                <td class="py-2 px-2 text-slate-200 whitespace-nowrap">${escapeHtml(m.fecha)}</td>
+                <td class="py-2 px-2 text-slate-100">${escapeHtml(m.concepto)}</td>
+                <td class="py-2 px-2 text-right ${r > 0 ? "text-red-300" : "text-slate-400"} whitespace-nowrap">${money(r)}</td>
+                <td class="py-2 px-2 text-right ${d > 0 ? "text-emerald-300" : "text-slate-400"} whitespace-nowrap">${money(d)}</td>
+                <td class="py-2 px-2 text-right text-slate-200 whitespace-nowrap">${money(s)}</td>
+              </tr>
+            `;
+          })
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
 
-searchInput.addEventListener("input", applyFilter);
-
-btnExport.addEventListener("click", () => {
-  downloadCSV(filtered.length ? filtered : movimientos);
+// Toggle JSON crudo
+btnToggleRaw?.addEventListener("click", () => {
+  if (!rawBox) return;
+  const isHidden = rawBox.classList.contains("hidden");
+  rawBox.classList.toggle("hidden", !isHidden);
+  btnToggleRaw.textContent = isHidden ? "Ocultar JSON" : "Ver JSON";
 });
 
 // -------------------------
-// Upload & process
+// Config modal
+// -------------------------
+function openConfig(msgText = "") {
+  if (!configModal) return;
+  configModal.classList.remove("hidden");
+  configModal.classList.add("flex");
+  configMsg.textContent = msgText || "";
+}
+
+function closeConfig() {
+  if (!configModal) return;
+  configModal.classList.add("hidden");
+  configModal.classList.remove("flex");
+  configMsg.textContent = "";
+}
+
+btnConfig?.addEventListener("click", () => openConfig());
+btnConfigClose?.addEventListener("click", closeConfig);
+
+configModal?.addEventListener("click", (e) => {
+  if (e.target === configModal) closeConfig();
+});
+
+btnShowKey?.addEventListener("click", () => {
+  if (!apiKeyInput) return;
+  if (apiKeyInput.type === "password") {
+    apiKeyInput.type = "text";
+    btnShowKey.textContent = "Ocultar";
+  } else {
+    apiKeyInput.type = "password";
+    btnShowKey.textContent = "Mostrar";
+  }
+});
+
+btnOpenConfigFolder?.addEventListener("click", async () => {
+  if (!hasNative()) return alert("Falta preload.js / no estás en Electron");
+  await window.native.openConfigFolder();
+});
+
+btnSaveKey?.addEventListener("click", async () => {
+  if (!hasNative()) return alert("Falta preload.js / no estás en Electron");
+
+  const key = (apiKeyInput.value || "").trim();
+  if (!key) {
+    configMsg.textContent = "⚠️ API Key vacía.";
+    return;
+  }
+
+  configMsg.textContent = "Guardando…";
+  const r = await window.native.setApiKey(key);
+  if (!r.ok) {
+    configMsg.textContent = "❌ " + (r.error || "No se pudo guardar");
+    return;
+  }
+
+  configMsg.textContent = "Reiniciando servidor…";
+  const rr = await window.native.restartServer();
+  if (!rr.ok) {
+    configMsg.textContent = "✅ Guardada, pero no pude reiniciar server: " + (rr.error || "");
+    return;
+  }
+
+  configMsg.textContent = "✅ Listo. Ya puedes procesar PDFs.";
+  closeConfig();
+});
+
+// Auto-abrir si falta key (Electron)
+(async () => {
+  if (!hasNative()) return;
+  const r = await window.native.configGet().catch(() => null);
+  if (r?.ok && !r?.config?.hasKey) openConfig("⚠️ Falta la API Key. Pégala para continuar.");
+})();
+
+// -------------------------
+// File picking
+// -------------------------
+btnPick.addEventListener("click", () => pdfInput.click());
+
+pdfInput.addEventListener("change", () => {
+  const f = pdfInput.files?.[0];
+  fileName.textContent = f ? f.name : "Ninguno";
+  btnUpload.disabled = !f;
+
+  // limpia resultados
+  renderTable([]);
+  if (rawBox) rawBox.textContent = "";
+  if (rawBox) rawBox.classList.add("hidden");
+  if (btnToggleRaw) btnToggleRaw.textContent = "Ver JSON";
+
+  setStatus(f ? "PDF listo para procesar." : "Listo.", "info");
+});
+
+// -------------------------
+// Upload
 // -------------------------
 btnUpload.addEventListener("click", async () => {
-  if (!selectedFile) return;
+  const file = pdfInput.files?.[0];
+  if (!file) return;
 
-  if (!navigator.onLine) {
-    alert("Sin internet. Conéctate para poder procesar.");
-    setStatus("⚠️ Sin internet.", "warn");
-    return;
-  }
-
-  setLoading(true, "Subiendo PDF y procesando…");
+  setLoading(true);
   setStatus("Procesando…", "info");
+  renderTable([]);
+  if (rawBox) rawBox.textContent = "";
 
   try {
-    const formData = new FormData();
-    formData.append("pdf", selectedFile);
+    const fd = new FormData();
+    fd.append("pdf", file);
+    const pass = (passwordInput.value || "").trim();
+    if (pass) fd.append("password", pass);
 
-    const pass = (pdfPassword.value || "").trim();
-    formData.append("password", pass);
+    const resp = await fetch(UPLOAD_URL, { method: "POST", body: fd });
 
-    const resp = await fetch("/api/upload", {
-      method: "POST",
-      body: formData,
-    });
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch {}
 
-    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = data?.error || `HTTP ${resp.status}`;
+      setStatus(`❌ ${msg}`, "error");
 
-    // PDF protegido
-    if (resp.status === 401) {
-      setLoading(false);
-      setStatus(data?.error || "PDF protegido. Escribe el password y reintenta.", "warn");
-      pdfPassword.focus();
+      if (
+        String(msg).includes("OPENAI_API_KEY") ||
+        String(msg).toLowerCase().includes("api key")
+      ) {
+        if (hasNative()) openConfig("⚠️ Falta la API Key. Pégala y guarda.");
+      }
+
+      alert(msg);
       return;
     }
 
-    if (!resp.ok) {
-      throw new Error(data?.error || "Error procesando PDF.");
-    }
+    // ✅ éxito
+    setStatus("✅ Listo", "ok");
 
-    movimientos = Array.isArray(data.movimientos) ? data.movimientos : [];
-    filtered = movimientos.slice();
-    applyFilter();
+    const movs = Array.isArray(data?.movimientos) ? data.movimientos : [];
+    renderTable(movs);
 
-    setLoading(false);
-
-    const modo = data?.modo ? String(data.modo) : "vision";
-    setStatus(`Listo ✅ (${modo}). Filas: ${movimientos.length}`, movimientos.length ? "ok" : "warn");
-
-    // Tip si salió vacío
-    if (movimientos.length === 0) {
-      alert(
-        "Se procesó pero salió 0 filas.\n\n" +
-        "Causas comunes:\n" +
-        "• El PDF es escaneado muy borroso\n" +
-        "• El PDF está protegido y falta/está mal el password\n" +
-        "• En Electron el server no puede escribir en tmp/uploads (permisos)\n\n" +
-        "Si estás en Electron: aplica el fix de RUNTIME_DIR (AppData) en main/server."
-      );
-    }
+    // JSON crudo (por si lo quieres)
+    if (rawBox) rawBox.textContent = JSON.stringify(data, null, 2);
   } catch (err) {
+    const msg = err?.message || String(err);
+    setStatus(`❌ ${msg}`, "error");
+    alert(msg);
+  } finally {
     setLoading(false);
-    setStatus(`❌ ${err.message}`, "error");
-    alert(err.message);
   }
 });
