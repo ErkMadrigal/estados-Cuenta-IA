@@ -1,4 +1,4 @@
-// main.js ✅ completo: config.json + IPC + server + preload
+// main.js ✅ robusto: puerto real + error visible si no levantó
 const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -7,9 +7,6 @@ let mainWindow = null;
 let startServer, stopServer;
 let currentPort = null;
 
-// ----------------------
-// Config (userData/config.json)
-// ----------------------
 function getConfigPath() {
   return path.join(app.getPath("userData"), "config.json");
 }
@@ -30,16 +27,14 @@ function writeConfig(cfg) {
   return true;
 }
 
-// ----------------------
-// IPC (Renderer <-> Main)
-// ----------------------
+// IPC
 ipcMain.handle("config:get", async () => {
   const cfg = readConfig();
   const hasKey = !!(cfg.OPENAI_API_KEY && String(cfg.OPENAI_API_KEY).trim());
   return { ok: true, config: { hasKey } };
 });
 
-ipcMain.handle("config:setApiKey", async (e, apiKey) => {
+ipcMain.handle("config:setApiKey", async (_e, apiKey) => {
   apiKey = String(apiKey || "").trim();
   if (!apiKey) return { ok: false, error: "API Key vacía." };
 
@@ -47,9 +42,7 @@ ipcMain.handle("config:setApiKey", async (e, apiKey) => {
   cfg.OPENAI_API_KEY = apiKey;
   writeConfig(cfg);
 
-  // ✅ inyectar al proceso actual
   process.env.OPENAI_API_KEY = apiKey;
-
   return { ok: true };
 });
 
@@ -62,7 +55,8 @@ ipcMain.handle("config:openFolder", async () => {
 ipcMain.handle("app:restartServer", async () => {
   try {
     if (stopServer) await stopServer();
-    currentPort = await startServer(process.env.PORT || 3000);
+    // 0 => puerto libre
+    currentPort = await startServer(0);
     return { ok: true, port: currentPort };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
@@ -70,30 +64,29 @@ ipcMain.handle("app:restartServer", async () => {
 });
 
 ipcMain.handle("app:getPort", async () => {
-  return { ok: true, port: currentPort || (process.env.PORT || 3000) };
+  return { ok: true, port: currentPort };
 });
 
-// ----------------------
-// Window + Server
-// ----------------------
 async function createWindow() {
-  // ✅ env base ANTES de require("./server.cjs")
   process.env.ELECTRON_IS_PACKAGED = app.isPackaged ? "1" : "0";
   process.env.RUNTIME_DIR = path.join(app.getPath("userData"), "runtime");
 
-  // ✅ cargar key guardada si existe
+  // cargar key guardada
   const cfg = readConfig();
   if (cfg.OPENAI_API_KEY) process.env.OPENAI_API_KEY = String(cfg.OPENAI_API_KEY).trim();
 
   ({ startServer, stopServer } = require("./server.cjs"));
 
-  // ✅ intenta iniciar server; si no hay key, NO truena la app: UI pedirá key
-  const desiredPort = process.env.PORT || 3000;
   try {
-    currentPort = await startServer(desiredPort);
+    // 0 => evita choques de puertos en otras laps
+    currentPort = await startServer(0);
   } catch (e) {
-    console.warn("[main] Server no inició:", e?.message || e);
-    currentPort = desiredPort; // UI se cargará igual si server ya está o si arranca luego
+    dialog.showErrorBox(
+      "No pudo iniciar el servidor",
+      `No se pudo levantar el backend.\n\n${e?.message || e}`
+    );
+    app.quit();
+    return;
   }
 
   mainWindow = new BrowserWindow({
@@ -107,18 +100,7 @@ async function createWindow() {
     },
   });
 
-  try {
-    await mainWindow.loadURL(`http://localhost:${currentPort}`);
-  } catch (e) {
-    dialog.showErrorBox(
-      "No se pudo cargar la interfaz",
-      `No pude abrir http://localhost:${currentPort}\n\n${e?.message || e}`
-    );
-  }
-
-  if (!app.isPackaged) {
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-  }
+  await mainWindow.loadURL(`http://127.0.0.1:${currentPort}`);
 
   mainWindow.on("closed", async () => {
     mainWindow = null;

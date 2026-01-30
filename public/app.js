@@ -1,4 +1,4 @@
-// public/app.js ✅ completo (tabla + config + upload)
+// public/app.js ✅ completo (tabla + config + upload + export XLSX) + FIX Failed to fetch
 
 // -------------------------
 // DOM
@@ -17,6 +17,10 @@ const movCount = document.getElementById("movCount");
 const btnToggleRaw = document.getElementById("btnToggleRaw");
 const rawBox = document.getElementById("rawBox");
 
+// Export
+const btnExportXlsx = document.getElementById("btnExportXlsx");
+let lastMovimientos = [];
+
 // Config modal
 const btnConfig = document.getElementById("btnConfig");
 const configModal = document.getElementById("configModal");
@@ -26,9 +30,6 @@ const btnSaveKey = document.getElementById("btnSaveKey");
 const btnShowKey = document.getElementById("btnShowKey");
 const btnOpenConfigFolder = document.getElementById("btnOpenConfigFolder");
 const configMsg = document.getElementById("configMsg");
-
-// ✅ URL robusta: mismo origin/puerto de la UI
-const UPLOAD_URL = new URL("/api/upload", window.location.origin).toString();
 
 // -------------------------
 // helpers UI
@@ -70,12 +71,28 @@ function escapeHtml(s) {
 }
 
 // -------------------------
+// ✅ URL backend REAL (evita Failed to fetch)
+// -------------------------
+async function getUploadUrl() {
+  // Electron: usar puerto real
+  if (hasNative()) {
+    const r = await window.native.getPort().catch(() => null);
+    const port = r?.ok ? r.port : null;
+    if (port) return `http://127.0.0.1:${port}/api/upload`;
+  }
+  // fallback navegador
+  return new URL("/api/upload", window.location.origin).toString();
+}
+
+// -------------------------
 // Tabla render
 // -------------------------
 function renderTable(movs = []) {
   if (!tableWrap) return;
 
   movCount.textContent = String(movs.length || 0);
+
+  if (btnExportXlsx) btnExportXlsx.disabled = !(movs && movs.length);
 
   if (!movs.length) {
     tableWrap.innerHTML = `<div class="text-slate-400 text-sm">Sin movimientos.</div>`;
@@ -116,12 +133,37 @@ function renderTable(movs = []) {
   `;
 }
 
-// Toggle JSON crudo
+// Toggle JSON crudo (si lo activas)
 btnToggleRaw?.addEventListener("click", () => {
   if (!rawBox) return;
   const isHidden = rawBox.classList.contains("hidden");
   rawBox.classList.toggle("hidden", !isHidden);
   btnToggleRaw.textContent = isHidden ? "Ocultar JSON" : "Ver JSON";
+});
+
+// -------------------------
+// Exportar XLSX
+// -------------------------
+btnExportXlsx?.addEventListener("click", () => {
+  if (!lastMovimientos.length) return alert("No hay movimientos para exportar");
+  if (typeof XLSX === "undefined") return alert("No se cargó la librería XLSX. Revisa el <script> CDN.");
+
+  const rows = lastMovimientos.map((m) => ({
+    Fecha: m.fecha ?? "",
+    Concepto: m.concepto ?? "",
+    Retiros: Number(m.retiros || 0),
+    Depositos: Number(m.depositos || 0),
+    Saldo: Number(m.saldo || 0),
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Movimientos");
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `estado_cuenta_${stamp}.xlsx`);
 });
 
 // -------------------------
@@ -160,12 +202,12 @@ btnShowKey?.addEventListener("click", () => {
 });
 
 btnOpenConfigFolder?.addEventListener("click", async () => {
-  if (!hasNative()) return alert("Falta preload.js / no estás en Electron");
+  if (!hasNative()) return alert("No estás en Electron / preload no cargó.");
   await window.native.openConfigFolder();
 });
 
 btnSaveKey?.addEventListener("click", async () => {
-  if (!hasNative()) return alert("Falta preload.js / no estás en Electron");
+  if (!hasNative()) return alert("No estás en Electron / preload no cargó.");
 
   const key = (apiKeyInput.value || "").trim();
   if (!key) {
@@ -191,7 +233,7 @@ btnSaveKey?.addEventListener("click", async () => {
   closeConfig();
 });
 
-// Auto-abrir si falta key (Electron)
+// Auto-abrir si falta key
 (async () => {
   if (!hasNative()) return;
   const r = await window.native.configGet().catch(() => null);
@@ -201,14 +243,14 @@ btnSaveKey?.addEventListener("click", async () => {
 // -------------------------
 // File picking
 // -------------------------
-btnPick.addEventListener("click", () => pdfInput.click());
+btnPick?.addEventListener("click", () => pdfInput?.click());
 
-pdfInput.addEventListener("change", () => {
+pdfInput?.addEventListener("change", () => {
   const f = pdfInput.files?.[0];
   fileName.textContent = f ? f.name : "Ninguno";
   btnUpload.disabled = !f;
 
-  // limpia resultados
+  lastMovimientos = [];
   renderTable([]);
   if (rawBox) rawBox.textContent = "";
   if (rawBox) rawBox.classList.add("hidden");
@@ -220,16 +262,19 @@ pdfInput.addEventListener("change", () => {
 // -------------------------
 // Upload
 // -------------------------
-btnUpload.addEventListener("click", async () => {
+btnUpload?.addEventListener("click", async () => {
   const file = pdfInput.files?.[0];
   if (!file) return;
 
   setLoading(true);
   setStatus("Procesando…", "info");
+  lastMovimientos = [];
   renderTable([]);
   if (rawBox) rawBox.textContent = "";
 
   try {
+    const UPLOAD_URL = await getUploadUrl();
+
     const fd = new FormData();
     fd.append("pdf", file);
     const pass = (passwordInput.value || "").trim();
@@ -238,18 +283,13 @@ btnUpload.addEventListener("click", async () => {
     const resp = await fetch(UPLOAD_URL, { method: "POST", body: fd });
 
     let data = null;
-    try {
-      data = await resp.json();
-    } catch {}
+    try { data = await resp.json(); } catch {}
 
     if (!resp.ok) {
       const msg = data?.error || `HTTP ${resp.status}`;
       setStatus(`❌ ${msg}`, "error");
 
-      if (
-        String(msg).includes("OPENAI_API_KEY") ||
-        String(msg).toLowerCase().includes("api key")
-      ) {
+      if (String(msg).includes("OPENAI_API_KEY") || String(msg).toLowerCase().includes("api key")) {
         if (hasNative()) openConfig("⚠️ Falta la API Key. Pégala y guarda.");
       }
 
@@ -257,13 +297,12 @@ btnUpload.addEventListener("click", async () => {
       return;
     }
 
-    // ✅ éxito
     setStatus("✅ Listo", "ok");
 
     const movs = Array.isArray(data?.movimientos) ? data.movimientos : [];
-    renderTable(movs);
+    lastMovimientos = movs;
 
-    // JSON crudo (por si lo quieres)
+    renderTable(movs);
     if (rawBox) rawBox.textContent = JSON.stringify(data, null, 2);
   } catch (err) {
     const msg = err?.message || String(err);

@@ -651,20 +651,31 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
 // =====================================================
 // start/stop (Electron)
 // =====================================================
+// =====================================================
+// start/stop (Electron) ✅ puerto libre si 3000 ocupado
+// =====================================================
 let serverInstance = null;
 
 function startServer(port = process.env.PORT || 3000) {
   return new Promise((resolve, reject) => {
     try {
-      if (serverInstance) return resolve(port);
+      if (serverInstance) {
+        const p = serverInstance.address()?.port || port;
+        return resolve(p);
+      }
 
-      serverInstance = app.listen(port, () => {
-        console.log("[server] ✅ running on", port);
-        resolve(port);
+      serverInstance = app.listen(port, "127.0.0.1", () => {
+        const realPort = serverInstance.address()?.port || port;
+        console.log("[server] ✅ running on", realPort);
+        resolve(realPort);
       });
 
-      serverInstance.on("error", reject);
+      serverInstance.on("error", (err) => {
+        serverInstance = null;
+        reject(err);
+      });
     } catch (e) {
+      serverInstance = null;
       reject(e);
     }
   });
@@ -673,8 +684,12 @@ function startServer(port = process.env.PORT || 3000) {
 function stopServer() {
   return new Promise((resolve) => {
     if (!serverInstance) return resolve();
-    serverInstance.close(() => resolve());
+    serverInstance.close(() => {
+      serverInstance = null;
+      resolve();
+    });
   });
 }
 
 module.exports = { startServer, stopServer };
+
